@@ -206,7 +206,7 @@ describe("git-state checks (temporary repo)", () => {
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "bump-version-test-"));
     execSync("git init -q", { cwd: tmpDir });
-    execSync('git config user.email "test@example.com"', { cwd: tmpDir });
+    execSync('git config user.email "inowio@outlook.com"', { cwd: tmpDir });
     execSync('git config user.name "Test"', { cwd: tmpDir });
     execSync("git config commit.gpgsign false", { cwd: tmpDir });
     writeFileSync(join(tmpDir, "seed.txt"), "seed\n");

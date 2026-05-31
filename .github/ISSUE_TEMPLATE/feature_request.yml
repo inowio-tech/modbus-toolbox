@@ -1,0 +1,29 @@
+name: Feature request
+description: Suggest an improvement for Inowio Modbus Workbench.
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What workflow, device setup, or limitation should this improve?
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Describe the behavior you would like to see.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Mention any workaround or alternative design you have considered.
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add diagrams, screenshots, device details, or examples if useful.
