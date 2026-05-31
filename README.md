@@ -124,7 +124,7 @@ Released under the [MIT License](LICENSE).
 
 - Issues: <https://github.com/inowio/modbus-workbench/issues>
 - Discussions: <https://github.com/inowio/modbus-workbench/discussions>
-- Email: <support@inowio.in>
+- Email: <inowio@outlook.com>
 
 ---
 

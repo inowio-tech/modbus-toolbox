@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: mailto:inowio@outlook.com
+    about: Please report suspected vulnerabilities privately by email, not in public issues.
+  - name: Questions and discussions
+    url: https://github.com/inowio/modbus-workbench/discussions
+    about: Use discussions for questions, ideas, and general help.
