@@ -142,6 +142,29 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Extract release notes from CHANGELOG
+        id: notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.verify-version.outputs.version }}"
+          # Pull the section between `## [VERSION]` and the next `## [` heading.
+          # Falls back to a CHANGELOG link if no matching section is found, so
+          # the updater modal never renders empty.
+          NOTES=$(awk -v ver="$VERSION" '
+            $0 ~ "^## \\[" ver "\\]" { flag=1; next }
+            flag && /^## \[/ { exit }
+            flag { print }
+          ' CHANGELOG.md)
+          if [[ -z "${NOTES//[[:space:]]/}" ]]; then
+            NOTES="See https://github.com/${GITHUB_REPOSITORY}/blob/main/CHANGELOG.md for details."
+          fi
+          {
+            echo "body<<RELEASE_NOTES_EOF"
+            echo "$NOTES"
+            echo "RELEASE_NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build and upload release
         uses: tauri-apps/tauri-action@v0
         env:
@@ -151,6 +174,7 @@ jobs:
         with:
           tagName: ${{ needs.verify-version.outputs.tag }}
           releaseName: ${{ needs.verify-version.outputs.tag }}
+          releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: true
           prerelease: ${{ contains(needs.verify-version.outputs.tag, '-') }}
           includeUpdaterJson: true
