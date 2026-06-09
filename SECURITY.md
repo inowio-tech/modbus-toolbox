@@ -14,7 +14,7 @@ Security fixes are provided for the latest stable release and the current `main`
 
 Please do not report security vulnerabilities in public GitHub issues.
 
-Email vulnerability reports to inowio@outlook.com with the subject:
+Email vulnerability reports to info@inowio.in with the subject:
 
 ```text
 [SECURITY] Inowio Modbus Workbench

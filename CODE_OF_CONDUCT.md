@@ -23,7 +23,7 @@ We are committed to making participation in Inowio Modbus Workbench a respectful
 
 Maintainers may remove comments, reject contributions, temporarily limit participation, or permanently ban contributors who violate this code of conduct.
 
-To report unacceptable behavior, email inowio@outlook.com. Reports will be reviewed privately and handled as fairly and promptly as possible.
+To report unacceptable behavior, email info@inowio.in. Reports will be reviewed privately and handled as fairly and promptly as possible.
 
 ## Scope
 

@@ -8,6 +8,17 @@ Desktop toolkit for configuring, testing, and monitoring Modbus TCP/RTU devices.
 
 ![Inowio Modbus Workbench](public/logo.svg)
 
+## Screenshots
+
+| | |
+| --- | --- |
+| ![Inowio Modbus Workbench screenshot 1](public/screenshots/modbus-workbench-1.jpg) | ![Inowio Modbus Workbench screenshot 2](public/screenshots/modbus-workbench-2.jpg) |
+| ![Inowio Modbus Workbench screenshot 3](public/screenshots/modbus-workbench-3.jpg) | ![Inowio Modbus Workbench screenshot 4](public/screenshots/modbus-workbench-4.jpg) |
+| ![Inowio Modbus Workbench screenshot 5](public/screenshots/modbus-workbench-5.jpg) | ![Inowio Modbus Workbench screenshot 6](public/screenshots/modbus-workbench-6.jpg) |
+| ![Inowio Modbus Workbench screenshot 7](public/screenshots/modbus-workbench-7.jpg) | ![Inowio Modbus Workbench screenshot 8](public/screenshots/modbus-workbench-8.jpg) |
+| ![Inowio Modbus Workbench screenshot 9](public/screenshots/modbus-workbench-9.jpg) | ![Inowio Modbus Workbench screenshot 10](public/screenshots/modbus-workbench-10.jpg) |
+| ![Inowio Modbus Workbench screenshot 11](public/screenshots/modbus-workbench-11.jpg) | |
+
 ## Highlights
 
 - Multi-protocol Modbus (TCP & RTU) with persistent workspace settings
@@ -124,7 +135,7 @@ Released under the [MIT License](LICENSE).
 
 - Issues: <https://github.com/inowio/modbus-workbench/issues>
 - Discussions: <https://github.com/inowio/modbus-workbench/discussions>
-- Email: <inowio@outlook.com>
+- Email: <info@inowio.in>
 
 ---
 
