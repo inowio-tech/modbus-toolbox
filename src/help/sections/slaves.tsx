@@ -155,7 +155,7 @@ const slavesSection: HelpSectionDefinition = {
       </SectionBlock>
       <SectionBlock section="slaves" anchor="detail-table" title="Register table columns">
         <ul className="list-disc space-y-1 pl-5">
-          <li><strong>Local Address</strong> — base-relative (0-based) address aligned with the datasheet.</li>
+          <li><strong>Register Address</strong> — base-relative (0-based) address aligned with the datasheet.</li>
           <li><strong>Alias</strong> — friendly label reused by Analyzer, Logs, Signals.</li>
           <li><strong>Data Type</strong> — drives register count and decode logic (u16/i16, i32/u32, f32/f64, etc.).</li>
           <li><strong>Byte Order</strong> — ABCD/BADC/CDAB/DCBA + swap combos to fix vendor endianness.</li>
@@ -251,7 +251,7 @@ const slavesSection: HelpSectionDefinition = {
       <SectionBlock section="slaves" anchor="registers-rows" title="Register row anatomy">
         <p>Each row equals a logical Modbus item:</p>
         <ul className="list-disc space-y-1 pl-5">
-          <li><strong>Local Address</strong> — matches device docs.</li>
+          <li><strong>Register Address</strong> — matches device docs.</li>
           <li><strong>Alias</strong> — meaningful label reused everywhere.</li>
           <li><strong>Data Type</strong> — controls register count and decode.</li>
           <li><strong>Byte Order</strong> — golden rule: if the value looks wrong, byte order probably is.</li>

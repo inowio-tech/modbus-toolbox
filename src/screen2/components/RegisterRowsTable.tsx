@@ -78,7 +78,7 @@ export function RegisterRowsTable({
         <div
           className={`${gridMinWidthClass} grid gap-2 border-b border-slate-200 ${gridPaddingClass} py-3 text-xs font-semibold text-slate-700 dark:border-slate-800 dark:text-slate-300 ${gridColsClass}`}
         >
-          <div className="">Local Address</div>
+          <div className="">Register Address</div>
           <div className="">Alias</div>
           <div className="">Data Type</div>
           <div className="" title="Ordering for multi-register values.">Byte Order</div>
@@ -155,7 +155,7 @@ export function RegisterRowsTable({
                     onChange={(e) =>
                       onChangeRow(r.key, { alias: e.currentTarget.value })
                     }
-                    placeholder="Alias"
+                    placeholder="Alias or Name"
                     disabled={busy || isOccupied}
                   />
 

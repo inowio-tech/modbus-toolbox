@@ -257,7 +257,7 @@ export default function Screen2Layout() {
         <div className="inline-flex gap-1 rounded-full border border-slate-200 bg-slate-100 p-1 dark:border-slate-800 dark:bg-slate-900/80">
           <button
             type="button"
-            className={`rounded-md px-3 py-1 font-semibold transition ${logTab === "workspace"
+            className={`rounded-full px-3 py-1 font-semibold transition ${logTab === "workspace"
               ? "bg-emerald-500/10 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200"
               : "text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-slate-100"
               }`}
@@ -267,7 +267,7 @@ export default function Screen2Layout() {
           </button>
           <button
             type="button"
-            className={`rounded-md px-3 py-1 font-semibold transition ${logTab === "app"
+            className={`rounded-full px-3 py-1 font-semibold transition ${logTab === "app"
               ? "bg-emerald-500/10 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200"
               : "text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-slate-100"
               }`}
@@ -861,7 +861,7 @@ export default function Screen2Layout() {
                     <div className="inline-flex gap-1 rounded-full border border-slate-200 bg-slate-100 p-1 text-xs dark:border-slate-800 dark:bg-slate-900/80">
                       <button
                         type="button"
-                        className={`px-3 py-1 font-semibold transition rounded-md ${inspectorTab === "logs"
+                        className={`px-3 py-1 font-semibold transition rounded-full ${inspectorTab === "logs"
                           ? "bg-emerald-500/10 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200"
                           : "text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-slate-100"
                           }`}
@@ -872,7 +872,7 @@ export default function Screen2Layout() {
                       {trafficAvailable ? (
                         <button
                           type="button"
-                          className={`px-3 py-1 font-semibold transition rounded-md ${inspectorTab === "traffic"
+                          className={`px-3 py-1 font-semibold transition rounded-full ${inspectorTab === "traffic"
                             ? "bg-emerald-500/10 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200"
                             : "text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-slate-100"
                             }`}

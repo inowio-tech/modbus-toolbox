@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useOutletContext } from "react-router-dom";
 import type { Screen2OutletContext, Workspace } from "../Screen2Layout";
-import { FiDownload, FiSave, FiTrash2 } from "react-icons/fi";
+import { FiSave, FiTrash2, FiUpload } from "react-icons/fi";
 import { formatLocalDateTime } from "../../datetime";
 import ConfirmDialog from "../../components/ConfirmDialog";
 import { useErrorToast, useToast } from "../../components/ToastProvider";
@@ -206,7 +206,7 @@ export default function WorkspacePage() {
             disabled={saving || exporting || deleting}
             className="flex items-center gap-1.5 rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
           >
-            <FiDownload size={15} />
+            <FiUpload size={15} />
             {exporting ? "Exporting..." : "Export Workspace"}
           </button>
           <button
