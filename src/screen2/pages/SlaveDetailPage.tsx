@@ -3038,6 +3038,26 @@ export default function SlaveDetailPage() {
 
           <button
             type="button"
+            className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-2 py-1.5 text-sm font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
+            onClick={() => refresh()}
+            disabled={busyOrPolling}
+            title="Reload from saved configuration"
+          >
+            <FiRefreshCw className="h-4 w-4" aria-hidden="true" />
+          </button>
+
+          {hasPageUnsaved ? (
+            <span
+              className="inline-flex items-center gap-1.5 rounded-full bg-amber-500/10 px-2.5 py-1 text-xs font-semibold text-amber-700 dark:text-amber-300"
+              title="You have unsaved changes"
+            >
+              <span className="h-1.5 w-1.5 rounded-full bg-amber-500" aria-hidden="true" />
+              Unsaved
+            </span>
+          ) : null}
+
+          <button
+            type="button"
             title={`Save all changes ${CTRL_S}`}
             className="inline-flex items-center gap-2 rounded-full border border-emerald-600/60 bg-emerald-500/10 px-3 py-1.5 text-sm font-semibold text-emerald-800 transition hover:border-emerald-500 hover:text-emerald-900 disabled:cursor-not-allowed disabled:opacity-60 dark:border-emerald-500/60 dark:text-emerald-200 dark:hover:border-emerald-400 dark:hover:text-emerald-100"
             onClick={() => {
@@ -3047,15 +3067,6 @@ export default function SlaveDetailPage() {
           >
             <FiSave className="h-4 w-4" aria-hidden="true" />
             {savingRows || savingSlaveAddress || savingPollInterval ? "Saving..." : "Save"}
-          </button>
-
-          <button
-            type="button"
-            className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-2 py-1.5 text-sm font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
-            onClick={() => refresh()}
-            disabled={busyOrPolling}
-          >
-            <FiRefreshCw className="h-4 w-4" aria-hidden="true" />
           </button>
         </div>
       </div>
