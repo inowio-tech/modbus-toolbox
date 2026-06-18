@@ -6,6 +6,9 @@ All notable changes to this project are tracked here following [Keep a Changelog
 
 _No changes yet._
 
+## [0.3.1] - 2026-06-18
+_No changes yet._
+
 ## [0.3.0] - 2026-05-23
 ### Changed
 - **Renamed the project from "Modbus Toolbox" to "Modbus Workbench"** to
