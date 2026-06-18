@@ -123,6 +123,18 @@ export default function AnalyzerTilesCard(props: Props) {
     };
   }, [menuOpen, tileMenuOpenId]);
 
+  useEffect(() => {
+    if (infoTileId == null) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setInfoTileId(null);
+      }
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [infoTileId]);
+
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800/70 dark:bg-slate-900/60">
       <div className="flex items-center justify-between gap-3">
@@ -372,7 +384,7 @@ export default function AnalyzerTilesCard(props: Props) {
               return (
                 <div
                   key={String(t.id)}
-                  className="relative flex h-full flex-col overflow-visible rounded-2xl border border-slate-200 bg-slate-50/70 p-4 dark:border-slate-800 dark:bg-slate-950/30"
+                  className={`relative flex h-full flex-col overflow-visible rounded-2xl border border-slate-200 bg-slate-50/70 p-4 dark:border-slate-800 dark:bg-slate-950/30 ${tileMenuOpenId === t.id ? "z-10" : ""}`}
                 >
                   <div
                     className={`tile-drag-handle flex items-start justify-between gap-3 ${props.layoutEditMode ? "cursor-move" : "cursor-default"}`}
@@ -499,7 +511,7 @@ export default function AnalyzerTilesCard(props: Props) {
                     </div>
                   ) : (
                     <div className="mt-4 min-h-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 py-3 dark:border-slate-800 dark:bg-slate-950/30">
-                      <div className="text-[11px] font-semibold uppercase font-semibold  dark:font-normal tracking-[0.22em] text-slate-500 dark:text-slate-400">Value</div>
+                      <div className="text-[11px] font-semibold uppercase dark:font-normal tracking-[0.22em] text-slate-500 dark:text-slate-400">Value</div>
                       <div className="mt-1 truncate font-mono text-lg text-slate-900 dark:text-slate-100">{value?.label ?? "NA"}</div>
                     </div>
                   )}
@@ -531,11 +543,16 @@ export default function AnalyzerTilesCard(props: Props) {
       )}
 
       {infoTileId != null ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs">
-          <div className="w-full max-w-2xl overflow-hidden rounded-2xl border border-slate-200 bg-white text-slate-900 shadow-2xl dark:border-slate-800/70 dark:bg-slate-900/60 dark:text-slate-100">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="analyzer-tileinfo-title"
+            className="w-full max-w-2xl overflow-hidden rounded-2xl border border-slate-200 bg-white text-slate-900 shadow-2xl dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100"
+          >
             <div className="flex items-center justify-between gap-2 border-b border-slate-200 bg-slate-50/70 px-4 py-3 dark:border-slate-800 dark:bg-slate-950/40">
               <div className="min-w-0">
-                <div className="truncate text-sm font-semibold text-emerald-700 dark:text-emerald-400">Tile information</div>
+                <div id="analyzer-tileinfo-title" className="truncate text-sm font-semibold text-emerald-700 dark:text-emerald-400">Tile information</div>
               </div>
 
               <button

@@ -61,16 +61,33 @@ export default function AnalyzerAddEditTileModal(props: Props) {
     return fromSlave > 0 ? fromSlave : 1000;
   }, [props.signals, props.slavesById, signalId]);
 
+  useEffect(() => {
+    if (!props.open) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape" && !props.busy) {
+        e.preventDefault();
+        props.onClose();
+      }
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [props.open, props.busy, props.onClose]);
+
   if (!props.open) return null;
 
   const busy = !!props.busy;
   const hasSignals = props.signals.length > 0;
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 backdrop-blur-xs">
-      <div className="w-full max-w-xl rounded-2xl border border-slate-200 bg-white p-6 text-slate-900 shadow-sm dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="analyzer-tile-modal-title"
+        className="w-full max-w-xl rounded-2xl border border-slate-200 bg-white p-6 text-slate-900 shadow-2xl dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100"
+      >
         <div className="mb-4">
-          <div className="text-sm font-semibold text-emerald-700 dark:text-emerald-400">
+          <div id="analyzer-tile-modal-title" className="text-sm font-semibold text-emerald-700 dark:text-emerald-400">
             {props.mode === "edit" ? "Edit tile" : "Add tile"}
           </div>
           <div className="mt-1 text-xs text-slate-600 dark:text-slate-300">Configure tile type and signal.</div>
