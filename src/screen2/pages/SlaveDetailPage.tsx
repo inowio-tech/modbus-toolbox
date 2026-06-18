@@ -20,6 +20,7 @@ import { ConnectionCard } from "../components/ConnectionCard";
 import { PollConfigCard } from "../components/PollConfigCard";
 import { RegisterRowsTable, type RegisterRowDraft } from "../components/RegisterRowsTable";
 import SlaveAttachmentsCard from "../components/SlaveAttachmentsCard";
+import SlaveStatusBar from "../components/SlaveStatusBar";
 import {
   ConnectionSettings as GlobalConnectionSettings,
   ConnectionSettingsForm,
@@ -3007,7 +3008,7 @@ export default function SlaveDetailPage() {
   }
 
   return (
-    <div className="flex flex-1 flex-col gap-3">
+    <div className="flex min-h-full flex-1 flex-col gap-3">
       <div className="sticky -top-4 z-20 -mt-4 mb-1 flex items-center justify-between gap-3 border-b border-slate-200 bg-white/90 px-4 py-2.5 backdrop-blur supports-backdrop-filter:bg-white/70 sm:-mx-4 dark:border-slate-800 dark:bg-slate-900/90 dark:supports-backdrop-filter:bg-slate-900/70">
         <div className="flex min-w-0 items-center gap-2">
           <span className="shrink-0 text-[11px] font-semibold uppercase tracking-[0.3em] text-emerald-700 dark:text-emerald-300">Slave</span>
@@ -3585,24 +3586,30 @@ export default function SlaveDetailPage() {
             }}
           />
         </div>
-        <div className="mt-4 rounded-full border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm dark:border-slate-800 dark:bg-slate-950/30">
-          <div className="inline-flex flex-wrap items-center gap-2 text-slate-700 dark:text-slate-200">
-            <span className={`h-2 w-2 rounded-full ${pollingRows ? "bg-emerald-400" : "bg-slate-600"}`} />
-            <span className={pollingRows ? "font-semibold text-emerald-700 dark:text-emerald-200" : "text-slate-600 dark:text-slate-300"}>
-              {pollingRows ? "Polling" : "Not polling"}
-            </span>
-            <span className="text-slate-400 dark:text-slate-500">|</span>
-            <span className="text-slate-600 dark:text-slate-300">Updated</span>
-            <span className="font-semibold text-slate-900 dark:text-slate-200">{runtimeSummary.ageLabel}</span>
-            <span className="text-slate-400 dark:text-slate-500">|</span>
-            <span className="text-emerald-700 dark:text-emerald-200">OK {runtimeSummary.ok}</span>
-            <span className="text-amber-700 dark:text-amber-200">Bad {runtimeSummary.illegal}</span>
-            <span className="text-rose-700 dark:text-rose-200">Err {runtimeSummary.error}</span>
-          </div>
-        </div>
       </div>
 
       <SlaveAttachmentsCard workspaceName={workspace.name} slaveId={slave?.id ?? null} />
+
+      <SlaveStatusBar
+        connected={connected}
+        connecting={connecting}
+        disconnecting={disconnecting}
+        connectionKind={slave?.connectionKind ?? conn?.kind ?? null}
+        endpointLabel={
+          (slave?.connectionKind ?? conn?.kind) === "serial"
+            ? conn?.serialPort
+              ? `${conn.serialPort}${conn.serialBaud ? ` @ ${conn.serialBaud}` : ""}`
+              : null
+            : conn?.tcpHost
+              ? `${conn.tcpHost}${conn.tcpPort ? `:${conn.tcpPort}` : ""}`
+              : null
+        }
+        unitId={slave?.unitId ?? null}
+        polling={pollingRows}
+        pollIntervalMs={Number.parseInt(pollIntervalMs, 10) || null}
+        summary={runtimeSummary}
+        pollingError={pollingRows ? pollingLastError : null}
+      />
 
       <ConfirmDialog
         open={leaveModalOpen}
