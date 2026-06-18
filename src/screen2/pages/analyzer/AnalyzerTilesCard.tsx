@@ -139,17 +139,59 @@ export default function AnalyzerTilesCard(props: Props) {
 
         <div className="flex items-center gap-2">
           {props.layoutEditMode ? null : (
-            <div className="relative flex items-center gap-2">
-              <button
-                type="button"
-                data-tiles-menu-btn
-                className="inline-flex items-center gap-2 rounded-md border border-slate-300 bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-400 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
-                onClick={() => setMenuOpen((prev) => !prev)}
-                title="Options"
-              >
-                <FiMenu className="h-4 w-4" aria-hidden="true" />
-                Options
-              </button>
+            <div className="flex items-center gap-2">
+              {/* Large screens (xl+): inline action buttons replace the Options menu */}
+              <div className="hidden items-center gap-2 xl:flex">
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-2 rounded-md border border-slate-300 bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-400 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
+                  onClick={props.onConfigureSignals}
+                  title="Configure Signals"
+                >
+                  <FiSettings className="h-4 w-4" aria-hidden="true" />
+                  Signals
+                </button>
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-2 rounded-md border border-slate-300 bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-400 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
+                  onClick={props.onAddTile}
+                  title="Add Tile"
+                >
+                  <FiPlus className="h-4 w-4" aria-hidden="true" />
+                  Add Tile
+                </button>
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-2 rounded-md border border-slate-300 bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-400 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
+                  onClick={props.onOpenConnectionSettings}
+                  title="Connection Settings"
+                >
+                  <FiLink className="h-4 w-4" aria-hidden="true" />
+                  Connection
+                </button>
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-2 rounded-md border border-slate-300 bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-400 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
+                  onClick={props.onRefresh}
+                  title="Refresh"
+                >
+                  <FiRefreshCw className="h-4 w-4" aria-hidden="true" />
+                  Refresh
+                </button>
+              </div>
+
+              {/* Small screens (<xl): Options dropdown */}
+              <div className="relative xl:hidden">
+                <button
+                  type="button"
+                  data-tiles-menu-btn
+                  className="inline-flex items-center gap-2 rounded-md border border-slate-300 bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-400 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
+                  onClick={() => setMenuOpen((prev) => !prev)}
+                  title="Options"
+                >
+                  <FiMenu className="h-4 w-4" aria-hidden="true" />
+                  Options
+                </button>
 
               {menuOpen ? (
                 <div
@@ -209,6 +251,7 @@ export default function AnalyzerTilesCard(props: Props) {
                   </button>
                 </div>
               ) : null}
+              </div>
 
               {props.pollingWanted ? (
                 <button
@@ -251,7 +294,34 @@ export default function AnalyzerTilesCard(props: Props) {
       </div>
 
       {props.tiles.length === 0 ? (
-        <div className="mt-3 text-sm text-slate-600 dark:text-slate-300">No tiles yet.</div>
+        <div className="mt-3 flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-slate-300 bg-slate-50/60 px-6 py-10 text-center dark:border-slate-700 dark:bg-slate-950/30">
+          <span className="flex h-12 w-12 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
+            <RiLayout4Line className="h-6 w-6" aria-hidden="true" />
+          </span>
+          <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">No tiles yet</div>
+          <div className="max-w-md text-xs text-slate-600 dark:text-slate-300">
+            Tiles show live values and trends for the signals you configure on this workspace. Start by
+            configuring your signals, then add a tile to visualize one.
+          </div>
+          <div className="mt-1 flex flex-wrap items-center justify-center gap-2">
+            <button
+              type="button"
+              className="inline-flex items-center gap-2 rounded-full border border-emerald-600/60 bg-emerald-500/10 px-4 py-2 text-xs font-semibold text-emerald-800 transition hover:border-emerald-500 hover:text-emerald-900 dark:border-emerald-500/60 dark:text-emerald-200 dark:hover:border-emerald-400 dark:hover:text-emerald-100"
+              onClick={props.onConfigureSignals}
+            >
+              <FiSettings className="h-4 w-4" aria-hidden="true" />
+              Configure Signals
+            </button>
+            <button
+              type="button"
+              className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-400 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
+              onClick={props.onAddTile}
+            >
+              <FiPlus className="h-4 w-4" aria-hidden="true" />
+              Add Tile
+            </button>
+          </div>
+        </div>
       ) : (
         <div
           ref={props.gridHostRef}
