@@ -44,6 +44,7 @@ export default function Screen2Layout() {
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [navGuardOpen, setNavGuardOpen] = useState(false);
   const [pendingPath, setPendingPath] = useState<string | null>(null);
+  const [pendingExit, setPendingExit] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [logViewerOpen, setLogViewerOpen] = useState(false);
   const [logViewerFullscreen, setLogViewerFullscreen] = useState(false);
@@ -137,6 +138,44 @@ export default function Screen2Layout() {
       void disconnectAll(name);
     };
   }, [workspaceName]);
+
+  // Navigate within the workspace, guarding against discarding unsaved changes.
+  function guardedNavigate(target: string) {
+    setMenuOpen(false);
+    if (hasUnsavedChanges) {
+      setPendingPath(target);
+      setNavGuardOpen(true);
+    } else {
+      navigate(target);
+    }
+  }
+
+  // Leave the workspace entirely (back to the picker), guarding unsaved changes.
+  function requestExitWorkspace() {
+    setMenuOpen(false);
+    if (hasUnsavedChanges) {
+      setPendingExit(true);
+      setNavGuardOpen(true);
+    } else {
+      void disconnectAll(workspaceName);
+      navigate("/");
+    }
+  }
+
+  function dismissNavGuard() {
+    setNavGuardOpen(false);
+    setPendingPath(null);
+    setPendingExit(false);
+  }
+
+  useEffect(() => {
+    if (!navGuardOpen) return;
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") dismissNavGuard();
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [navGuardOpen]);
 
   async function persistLogsPaneOpen(nextOpen: boolean) {
     if (!workspaceName) return;
@@ -612,15 +651,7 @@ export default function Screen2Layout() {
               to={`/app/${encodeURIComponent(workspaceName)}/workspace`}
               onClick={(e) => {
                 e.preventDefault();
-                const target = `/app/${encodeURIComponent(workspaceName)}/workspace`;
-                if (!hasUnsavedChanges) {
-                  setMenuOpen(false);
-                  navigate(target);
-                } else {
-                  setMenuOpen(false);
-                  setPendingPath(target);
-                  setNavGuardOpen(true);
-                }
+                guardedNavigate(`/app/${encodeURIComponent(workspaceName)}/workspace`);
               }}
             >
               <FiGrid className="h-4 w-4" aria-hidden="true" />
@@ -638,15 +669,7 @@ export default function Screen2Layout() {
               title={`${sidebarCollapsed ? "Connection" : ""}`}
               onClick={(e) => {
                 e.preventDefault();
-                const target = `/app/${encodeURIComponent(workspaceName)}/connection`;
-                if (!hasUnsavedChanges) {
-                  setMenuOpen(false);
-                  navigate(target);
-                } else {
-                  setMenuOpen(false);
-                  setPendingPath(target);
-                  setNavGuardOpen(true);
-                }
+                guardedNavigate(`/app/${encodeURIComponent(workspaceName)}/connection`);
               }}
             >
               <FiLink className="h-4 w-4" aria-hidden="true" />
@@ -664,15 +687,7 @@ export default function Screen2Layout() {
               title={`${sidebarCollapsed ? "Slaves" : ""}`}
               onClick={(e) => {
                 e.preventDefault();
-                const target = `/app/${encodeURIComponent(workspaceName)}/slaves`;
-                if (!hasUnsavedChanges) {
-                  setMenuOpen(false);
-                  navigate(target);
-                } else {
-                  setMenuOpen(false);
-                  setPendingPath(target);
-                  setNavGuardOpen(true);
-                }
+                guardedNavigate(`/app/${encodeURIComponent(workspaceName)}/slaves`);
               }}
             >
               <PiNetwork className="h-4 w-4" aria-hidden="true" />
@@ -690,15 +705,7 @@ export default function Screen2Layout() {
               title={`${sidebarCollapsed ? "Analyzer" : ""}`}
               onClick={(e) => {
                 e.preventDefault();
-                const target = `/app/${encodeURIComponent(workspaceName)}/analyzer`;
-                if (!hasUnsavedChanges) {
-                  setMenuOpen(false);
-                  navigate(target);
-                } else {
-                  setMenuOpen(false);
-                  setPendingPath(target);
-                  setNavGuardOpen(true);
-                }
+                guardedNavigate(`/app/${encodeURIComponent(workspaceName)}/analyzer`);
               }}
             >
               <FiActivity className="h-4 w-4" aria-hidden="true" />
@@ -716,15 +723,7 @@ export default function Screen2Layout() {
               title={`${sidebarCollapsed ? "Settings" : ""}`}
               onClick={(e) => {
                 e.preventDefault();
-                const target = `/app/${encodeURIComponent(workspaceName)}/client`;
-                if (!hasUnsavedChanges) {
-                  setMenuOpen(false);
-                  navigate(target);
-                } else {
-                  setMenuOpen(false);
-                  setPendingPath(target);
-                  setNavGuardOpen(true);
-                }
+                guardedNavigate(`/app/${encodeURIComponent(workspaceName)}/client`);
               }}
             >
               <LuSettings className="h-4 w-4" aria-hidden="true" />
@@ -776,15 +775,7 @@ export default function Screen2Layout() {
               title={`${sidebarCollapsed ? "About" : ""}`}
               onClick={(e) => {
                 e.preventDefault();
-                const target = `/app/${encodeURIComponent(workspaceName)}/about`;
-                if (!hasUnsavedChanges) {
-                  setMenuOpen(false);
-                  navigate(target);
-                } else {
-                  setMenuOpen(false);
-                  setPendingPath(target);
-                  setNavGuardOpen(true);
-                }
+                guardedNavigate(`/app/${encodeURIComponent(workspaceName)}/about`);
               }}
             >
               <FiInfo className="h-4 w-4" aria-hidden="true" />
@@ -795,9 +786,7 @@ export default function Screen2Layout() {
               type="button"
               className="hidden items-center gap-3 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 lg:flex dark:border-slate-800 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-700"
               onClick={() => {
-                setMenuOpen(false);
-                void disconnectAll(workspaceName);
-                navigate("/");
+                requestExitWorkspace();
               }}
               title={`${sidebarCollapsed ? "Exit Workspace" : ""}`}
             >
@@ -823,9 +812,7 @@ export default function Screen2Layout() {
               type="button"
               className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 lg:hidden dark:border-slate-800 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-700"
               onClick={() => {
-                setMenuOpen(false);
-                void disconnectAll(workspaceName);
-                navigate("/");
+                requestExitWorkspace();
               }}
               title="Close workspace"
             >
@@ -940,41 +927,54 @@ export default function Screen2Layout() {
         </div>
       </div>
 
-      {navGuardOpen && pendingPath ? (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60">
-          <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-4 shadow-sm">
+      {navGuardOpen && (pendingPath || pendingExit) ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="nav-guard-title"
+          onClick={dismissNavGuard}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-4 shadow-2xl dark:border-slate-800 dark:bg-slate-900"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="mb-4">
-              <div className="text-sm font-semibold text-emerald-400">Unsaved changes</div>
+              <div id="nav-guard-title" className="text-sm font-semibold text-emerald-700 dark:text-emerald-400">
+                Unsaved changes
+              </div>
             </div>
 
-            <div className="mt-2 rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-xs text-slate-200">
-              There are unsaved changes on this screen. If you leave now, those changes will be lost.
+            <div className="mt-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700 dark:border-slate-800 dark:bg-slate-950/60 dark:text-slate-200">
+              {pendingExit
+                ? "There are unsaved changes on this screen. If you exit the workspace now, those changes will be lost."
+                : "There are unsaved changes on this screen. If you leave now, those changes will be lost."}
             </div>
 
             <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:justify-end">
               <button
                 type="button"
-                className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-slate-700 bg-white/5 px-4 py-1 text-sm font-semibold text-slate-100 transition hover:border-slate-600 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
-                onClick={() => {
-                  setNavGuardOpen(false);
-                  setPendingPath(null);
-                }}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-4 py-1 text-sm font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
+                onClick={dismissNavGuard}
               >
                 Stay on this screen
               </button>
               <button
                 type="button"
-                className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-rose-500/60 bg-rose-500/10 px-4 py-1 text-sm font-semibold text-rose-200 transition hover:border-rose-400 hover:text-rose-100 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
+                className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-rose-500/60 bg-rose-500/10 px-4 py-1 text-sm font-semibold text-rose-700 transition hover:border-rose-400 hover:text-rose-800 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto dark:text-rose-200 dark:hover:text-rose-100"
                 onClick={() => {
                   const target = pendingPath;
-                  setNavGuardOpen(false);
-                  setPendingPath(null);
-                  if (target) {
+                  const exit = pendingExit;
+                  dismissNavGuard();
+                  if (exit) {
+                    void disconnectAll(workspaceName);
+                    navigate("/");
+                  } else if (target) {
                     navigate(target);
                   }
                 }}
               >
-                Leave without saving
+                {pendingExit ? "Exit without saving" : "Leave without saving"}
               </button>
             </div>
           </div>

@@ -3329,12 +3329,6 @@ export default function SlaveDetailPage() {
                 <FiPlus className="h-4 w-4" aria-hidden="true" />
                 Add Row
               </button>
-
-              {hasUnsavedChanges ? (
-                <span className="inline-flex items-center rounded-full bg-amber-500/10 px-3 py-2 text-xs font-semibold text-amber-800 dark:text-amber-200">
-                  Unsaved
-                </span>
-              ) : null}
             </div>
             <div className="flex flex-wrap items-center justify-end gap-4">
               {canWrite ? (
