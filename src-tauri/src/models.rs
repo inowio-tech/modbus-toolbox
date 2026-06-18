@@ -142,6 +142,14 @@ pub struct SlaveRegisterRow {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlaveRegisterCount {
+    pub slave_id: i64,
+    pub function_code: i64,
+    pub count: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SlaveRegisterRowUpsert {

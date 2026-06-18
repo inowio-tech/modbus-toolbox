@@ -2,11 +2,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useOutletContext } from "react-router-dom";
 import type { Screen2OutletContext } from "../Screen2Layout";
-import { FiEdit2, FiPlus, FiRefreshCcw, FiRefreshCw, FiSave, FiTrash2, FiX } from "react-icons/fi";
+import { FiEdit2, FiInfo, FiPlus, FiRefreshCcw, FiRefreshCw, FiSave, FiTrash2, FiX } from "react-icons/fi";
 import { formatLocalDateTime } from "../../datetime";
 import ConfirmDialog from "../../components/ConfirmDialog";
 import { useErrorToast, useToast } from "../../components/ToastProvider";
 import { logEvent } from "../api/logs";
+import { countSlaveRegisterRows, type SlaveRegisterCount } from "../api/slaves";
 import { MdOpenInNew } from "react-icons/md";
 
 type SlaveItem = {
@@ -45,6 +46,52 @@ function parseIntOrNull(raw: string): number | null {
   return Math.trunc(v);
 }
 
+const ALL_FUNCTION_CODES = [1, 2, 3, 4, 5, 6, 15, 16] as const;
+
+function fcHexLabel(fc: number): string {
+  return `0x${fc.toString(16).toUpperCase().padStart(2, "0")}`;
+}
+
+function fcFullLabel(fc: number): string {
+  switch (fc) {
+    case 1:
+      return "Read Coils (0x01)";
+    case 2:
+      return "Read Discrete Inputs (0x02)";
+    case 3:
+      return "Read Holding Registers (0x03)";
+    case 4:
+      return "Read Input Registers (0x04)";
+    case 5:
+      return "Write Single Coil (0x05)";
+    case 6:
+      return "Write Single Register (0x06)";
+    case 15:
+      return "Write Multiple Coils (0x0F)";
+    case 16:
+      return "Write Multiple Registers (0x10)";
+    default:
+      return `Function ${fc}`;
+  }
+}
+
+function buildCountsBySlave(
+  counts: SlaveRegisterCount[] | null | undefined,
+): Map<number, Map<number, number>> {
+  const out = new Map<number, Map<number, number>>();
+  if (!Array.isArray(counts)) return out;
+  for (const c of counts) {
+    if (c == null || c.count <= 0) continue;
+    let inner = out.get(c.slaveId);
+    if (!inner) {
+      inner = new Map<number, number>();
+      out.set(c.slaveId, inner);
+    }
+    inner.set(c.functionCode, c.count);
+  }
+  return out;
+}
+
 export default function SlavesPage() {
   const { workspace } = useOutletContext<Screen2OutletContext>();
   const navigate = useNavigate();
@@ -68,6 +115,9 @@ export default function SlavesPage() {
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
+  const [countsBySlave, setCountsBySlave] = useState<Map<number, Map<number, number>>>(new Map());
+  const [infoSlave, setInfoSlave] = useState<SlaveItem | null>(null);
+
   useErrorToast(error);
   useErrorToast(formError);
   useErrorToast(deleteError);
@@ -78,6 +128,13 @@ export default function SlavesPage() {
     try {
       const rows = await invoke<SlaveItem[]>("list_slaves", { name: workspace.name });
       setItems(rows);
+      try {
+        const counts = await countSlaveRegisterRows(workspace.name);
+        setCountsBySlave(buildCountsBySlave(counts));
+      } catch {
+        // Counts are supplementary; ignore failures so the slave list still renders.
+        setCountsBySlave(new Map());
+      }
     } catch (e) {
       setError(String(e));
     } finally {
@@ -88,6 +145,26 @@ export default function SlavesPage() {
   useEffect(() => {
     void refresh();
   }, [workspace.name]);
+
+  useEffect(() => {
+    if (!modalMode && !infoSlave) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key !== "Escape") return;
+      if (infoSlave) {
+        e.preventDefault();
+        setInfoSlave(null);
+        return;
+      }
+      if (modalMode && !saving) {
+        e.preventDefault();
+        setFormError(null);
+        setModalMode(null);
+        setModalSlaveId(null);
+      }
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [modalMode, infoSlave, saving]);
 
   const filtered = useMemo(() => {
     const t = query.trim().toLowerCase();
@@ -370,7 +447,34 @@ export default function SlavesPage() {
                       <div>Created: {formatLocalDateTime(s.createdAt)}</div>
                       <div>Updated: {formatLocalDateTime(s.updatedAt)}</div>
                     </div>
-                    <div className="mt-2 flex flex-wrap items-center gap-3" />
+                    <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
+                      {(() => {
+                        const inner = countsBySlave.get(s.id);
+                        const entries = ALL_FUNCTION_CODES.filter((fc) => (inner?.get(fc) ?? 0) > 0);
+                        if (entries.length === 0) {
+                          return <span className="text-slate-500 dark:text-slate-400">No registers configured</span>;
+                        }
+                        return entries.map((fc) => (
+                          <span
+                            key={fc}
+                            className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-100 px-2 py-0.5 font-mono leading-none tabular-nums dark:border-slate-700 dark:bg-white/5"
+                            title={`${fcFullLabel(fc)}: ${inner?.get(fc) ?? 0}`}
+                          >
+                            <span className="text-slate-500 dark:text-slate-400">{fcHexLabel(fc)}</span>
+                            <span className="font-semibold text-emerald-700 dark:text-emerald-300">{inner?.get(fc) ?? 0}</span>
+                          </span>
+                        ));
+                      })()}
+                      <button
+                        type="button"
+                        className="inline-flex items-center justify-center rounded-full border border-slate-200 p-1 text-slate-500 transition hover:border-slate-300 hover:text-slate-700 dark:border-slate-700 dark:text-slate-400 dark:hover:border-slate-600 dark:hover:text-slate-200"
+                        onClick={() => setInfoSlave(s)}
+                        title="Register details"
+                        aria-label={`Register details for ${s.name}`}
+                      >
+                        <FiInfo className="h-3.5 w-3.5" aria-hidden="true" />
+                      </button>
+                    </div>
                   </div>
                   
 
@@ -545,6 +649,86 @@ export default function SlavesPage() {
           }
         }}
       />
+
+      {infoSlave ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm">
+          <button
+            type="button"
+            className="absolute inset-0 cursor-default"
+            onClick={() => setInfoSlave(null)}
+            aria-label="Close"
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="slave-registers-title"
+            className="relative w-full max-w-lg overflow-hidden rounded-2xl border border-slate-200 bg-white text-slate-900 shadow-2xl dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100"
+          >
+            <div className="flex items-center justify-between gap-2 border-b border-slate-200 bg-slate-50/70 px-4 py-3 dark:border-slate-800 dark:bg-slate-950/40">
+              <div className="min-w-0">
+                <div id="slave-registers-title" className="truncate text-sm font-semibold text-emerald-700 dark:text-emerald-300">
+                  Register summary
+                </div>
+                <div className="mt-0.5 text-xs text-slate-600 dark:text-slate-400">Configured registers per function code</div>
+              </div>
+              <button
+                type="button"
+                className="rounded-full border border-slate-300 bg-slate-100 p-2 text-slate-700 transition hover:border-slate-400 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
+                onClick={() => setInfoSlave(null)}
+                title="Close"
+              >
+                <FiX className="h-4 w-4" aria-hidden="true" />
+              </button>
+            </div>
+
+            <div className="max-h-[75vh] overflow-auto p-4">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <div className="text-sm">
+                  <span className="text-slate-500 dark:text-slate-400">Unit ID:</span>{" "}
+                  <span className="font-semibold text-slate-900 dark:text-slate-100">{infoSlave.unitId}</span>
+                </div>
+                <div className="min-w-0 text-sm">
+                  <span className="text-slate-500 dark:text-slate-400">Name:</span>{" "}
+                  <span className="font-semibold text-slate-900 dark:text-slate-100">{infoSlave.name}</span>
+                </div>
+              </div>
+
+              {(() => {
+                const inner = countsBySlave.get(infoSlave.id);
+                const total = ALL_FUNCTION_CODES.reduce((sum, fc) => sum + (inner?.get(fc) ?? 0), 0);
+                return (
+                  <div className="mt-4 overflow-hidden rounded-xl border border-slate-200 dark:border-slate-800">
+                    <table className="w-full text-sm">
+                      <tbody>
+                        {ALL_FUNCTION_CODES.map((fc) => {
+                          const c = inner?.get(fc) ?? 0;
+                          return (
+                            <tr key={fc} className="border-b border-slate-200/70 last:border-b-0 dark:border-slate-800/70">
+                              <td className="px-3 py-1.5 text-slate-700 dark:text-slate-200">{fcFullLabel(fc)}</td>
+                              <td className={`px-3 py-1.5 text-right font-semibold ${c > 0 ? "text-emerald-700 dark:text-emerald-300" : "text-slate-400 dark:text-slate-500"}`}>
+                                {c}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                        <tr className="bg-slate-50 dark:bg-slate-950/40">
+                          <td className="px-3 py-1.5 font-semibold text-slate-900 dark:text-slate-100">Total</td>
+                          <td className="px-3 py-1.5 text-right font-semibold text-emerald-700 dark:text-emerald-300">{total}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              })()}
+
+              <div className="mt-4 grid grid-cols-1 gap-1 text-xs text-slate-500 sm:grid-cols-2 dark:text-slate-400">
+                <div>Created: {formatLocalDateTime(infoSlave.createdAt)}</div>
+                <div>Updated: {formatLocalDateTime(infoSlave.updatedAt)}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

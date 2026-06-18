@@ -39,3 +39,13 @@ export async function listSlaveRegisterRows(
     functionCode,
   });
 }
+
+export type SlaveRegisterCount = {
+  slaveId: number;
+  functionCode: number;
+  count: number;
+};
+
+export async function countSlaveRegisterRows(workspaceName: string): Promise<SlaveRegisterCount[]> {
+  return await invoke<SlaveRegisterCount[]>("count_slave_register_rows", { name: workspaceName });
+}
