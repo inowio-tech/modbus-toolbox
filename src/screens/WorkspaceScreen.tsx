@@ -1,13 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { FiBookOpen, FiDownload, FiEdit3, FiList, FiPlus, FiRefreshCcw, FiTrash2, FiX } from "react-icons/fi";
+import { FiBookOpen, FiDatabase, FiDownload, FiEdit3, FiGrid, FiList, FiPlus, FiRefreshCcw, FiSearch, FiTrash2, FiX } from "react-icons/fi";
 import { formatLocalDateTime } from "../datetime";
 import ConfirmDialog from "../components/ConfirmDialog";
 import ImportConflictModal from "../components/ImportConflictModal";
 import { useErrorToast, useToast } from "../components/ToastProvider";
 import ThemeToggleButton from "../components/ThemeToggleButton";
-import { MdOpenInNew } from "react-icons/md";
 import { AppLogEntry, listAppLogs, LogLevel } from "../screen2/api/logs";
 import { RiCloseLine } from "react-icons/ri";
 import { useHelp } from "../help/HelpProvider";
@@ -32,6 +31,13 @@ export default function WorkspaceScreen({ onOpen }: Props) {
   const { pushToast } = useToast();
 
   const [search, setSearch] = useState("");
+  const [view, setView] = useState<"grid" | "list">(() => {
+    try {
+      return window.localStorage.getItem("inowio.workspace.view") === "list" ? "list" : "grid";
+    } catch {
+      return "grid";
+    }
+  });
 
   const searchInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -267,12 +273,13 @@ export default function WorkspaceScreen({ onOpen }: Props) {
     return [...items].sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1));
   }, [search, workspaces]);
 
-  const gridColsClassName = useMemo(() => {
-    const count = filtered.length;
-    const mdCols = count >= 2 ? "md:grid-cols-2" : "md:grid-cols-1";
-    const lgCols = count >= 3 ? "lg:grid-cols-3" : count === 2 ? "lg:grid-cols-2" : "lg:grid-cols-1";
-    return `grid-cols-1 ${mdCols} ${lgCols}`;
-  }, [filtered.length]);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("inowio.workspace.view", view);
+    } catch {
+      // Best-effort persistence; ignore storage errors.
+    }
+  }, [view]);
 
   async function openWorkspace(ws: Workspace) {
     try {
@@ -369,92 +376,109 @@ export default function WorkspaceScreen({ onOpen }: Props) {
         </div>
       </header>
       <div className="flex min-h-0 flex-1 flex-col">
-        <div className="shrink-0 pt-4">
-          <main className="mx-auto w-full max-w-7xl rounded-2xl border border-slate-200 bg-white/80 shadow-sm dark:border-slate-800 dark:bg-slate-900/60">
-            <section className="w-full rounded-2xl p-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="text-sm uppercase font-semibold  dark:font-normal tracking-[0.25em] text-emerald-700 dark:text-emerald-300">Workspaces: <span className="text-slate-600 dark:text-slate-200">{workspaces.length}</span></div>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => void handleImportWorkspace()}
-                    className="flex items-center gap-1.5 rounded-full border border-slate-300 bg-white px-3.5 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
-                  >
-                    <FiDownload size={15} />
-                    Import
-                  </button>
-                  <button
-                    type="button"
-                    className="inline-flex items-center gap-2 rounded-full border border-emerald-600/60 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-800 transition hover:border-emerald-500 hover:text-emerald-900 dark:border-emerald-500/60 dark:text-emerald-200 dark:hover:border-emerald-400 dark:hover:text-emerald-100"
-                    onClick={() => {
-                      setAddError(null);
-                      setIsAddOpen(true);
-                    }}
-                    title="Add new workspace"
-                  >
-                    <FiPlus className="h-4 w-4" aria-hidden="true" />
-                    Add New
-                  </button>
-                  <button
-                    type="button"
-                    className="inline-flex items-center justify-center rounded-full border border-slate-300 bg-slate-100 px-2 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
-                    onClick={() => load()}
-                    disabled={loading}
-                    aria-label="Refresh"
-                    title="Refresh"
-                  >
-                    <FiRefreshCcw className="h-4 w-4" aria-hidden="true" />
-                  </button>
-                </div>
-              </div>
+        <div className="flex flex-wrap items-center gap-3 border-b border-slate-200 bg-white/60 px-4 py-3 dark:border-slate-800 dark:bg-slate-900/40">
+          <div className="text-xs font-semibold uppercase tracking-[0.25em] text-emerald-700 dark:text-emerald-300">
+            Workspaces
+            <span className="ml-2 font-mono text-sm tracking-normal text-slate-700 dark:text-slate-200">{workspaces.length}</span>
+          </div>
 
-              <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
-                <label className="text-sm font-semibold text-slate-700 dark:text-slate-200 sm:w-24" htmlFor="ws-search">
-                  Search
-                </label>
-                <div className="relative w-full">
-                  <input
-                    id="ws-search"
-                    ref={searchInputRef}
-                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 pr-8 text-sm text-slate-900 outline-hidden placeholder:text-slate-400 focus:border-emerald-600/60 focus:ring-2 focus:ring-emerald-500/10 dark:border-slate-700 dark:bg-slate-950/40 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-emerald-500/60"
-                    value={search}
-                    onChange={(e) => setSearch(e.currentTarget.value)}
-                    onKeyDown={(e) => {
-                      if (e.key !== "Escape") return;
-                      if (!search) return;
-                      e.preventDefault();
-                      setSearch("");
-                    }}
-                    placeholder="Workspace name"
-                  />
-                  {search ? (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSearch("");
-                        searchInputRef.current?.focus();
-                      }}
-                      className="absolute inset-y-0 right-2 flex items-center text-xs text-slate-500 transition hover:text-slate-700 dark:hover:text-slate-300"
-                      aria-label="Clear search"
-                    >
-                      <FiX className="h-3 w-3" aria-hidden="true" />
-                    </button>
-                  ) : null}
-                </div>
-              </div>
+          <div className="relative min-w-45 flex-1 sm:max-w-md">
+            <FiSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500" aria-hidden="true" />
+            <input
+              id="ws-search"
+              ref={searchInputRef}
+              aria-label="Search workspaces"
+              className="w-full rounded-full border border-slate-300 bg-white py-2 pl-9 pr-8 text-sm text-slate-900 outline-hidden placeholder:text-slate-400 focus:border-emerald-600/60 focus:ring-2 focus:ring-emerald-500/10 dark:border-slate-700 dark:bg-slate-950/40 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-emerald-500/60"
+              value={search}
+              onChange={(e) => setSearch(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                if (e.key !== "Escape") return;
+                if (!search) return;
+                e.preventDefault();
+                setSearch("");
+              }}
+              placeholder="Search workspaces"
+            />
+            {search ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setSearch("");
+                  searchInputRef.current?.focus();
+                }}
+                className="absolute inset-y-0 right-2 flex items-center text-xs text-slate-500 transition hover:text-slate-700 dark:hover:text-slate-300"
+                aria-label="Clear search"
+              >
+                <FiX className="h-3 w-3" aria-hidden="true" />
+              </button>
+            ) : null}
+          </div>
 
-              {error ? (
-                <div className="mt-4 rounded-xl border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-800 dark:text-rose-200">
-                  {error}
-                </div>
-              ) : null}
-            </section>
-          </main>
+          <div className="ml-auto flex items-center gap-2">
+            <div className="inline-flex items-center rounded-full border border-slate-300 bg-slate-100 p-0.5 dark:border-slate-700 dark:bg-white/5">
+              <button
+                type="button"
+                onClick={() => setView("grid")}
+                aria-pressed={view === "grid"}
+                title="Grid view"
+                aria-label="Grid view"
+                className={`inline-flex h-7 w-8 items-center justify-center rounded-full transition ${view === "grid" ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-200" : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"}`}
+              >
+                <FiGrid className="h-4 w-4" aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setView("list")}
+                aria-pressed={view === "list"}
+                title="List view"
+                aria-label="List view"
+                className={`inline-flex h-7 w-8 items-center justify-center rounded-full transition ${view === "list" ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-200" : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"}`}
+              >
+                <FiList className="h-4 w-4" aria-hidden="true" />
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => void handleImportWorkspace()}
+              className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-3.5 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-400 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
+              title="Import workspace"
+            >
+              <FiDownload className="h-4 w-4" aria-hidden="true" />
+              Import
+            </button>
+            <button
+              type="button"
+              className="inline-flex items-center gap-2 rounded-full border border-emerald-600/60 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-800 transition hover:border-emerald-500 hover:text-emerald-900 dark:border-emerald-500/60 dark:text-emerald-200 dark:hover:border-emerald-400 dark:hover:text-emerald-100"
+              onClick={() => {
+                setAddError(null);
+                setIsAddOpen(true);
+              }}
+              title="Add new workspace"
+            >
+              <FiPlus className="h-4 w-4" aria-hidden="true" />
+              Add New
+            </button>
+            <button
+              type="button"
+              className="inline-flex items-center justify-center rounded-full border border-slate-300 bg-slate-100 px-2.5 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
+              onClick={() => load()}
+              disabled={loading}
+              aria-label="Refresh"
+              title="Refresh"
+            >
+              <FiRefreshCcw className="h-4 w-4" aria-hidden="true" />
+            </button>
+          </div>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          <main className="mx-auto w-full max-w-7xl pb-6">
-            <section className="w-full">
-              <div className="mt-4">
+        {error ? (
+          <div className="mx-4 mt-3 rounded-xl border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-800 dark:text-rose-200">
+            {error}
+          </div>
+        ) : null}
+
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">
                 {loading ? <div className="flex items-center gap-2 p-2 text-sm text-slate-600 dark:text-slate-300 animate-pulse">
                   <FiRefreshCcw className="h-4 w-4 animate-spin" aria-hidden="true" />
                   Loading...
@@ -533,82 +557,174 @@ export default function WorkspaceScreen({ onOpen }: Props) {
                   </div>
                 ) : null}
 
-                {!loading && filtered.length > 0 ? (
-                  <div className="rounded-2xl p-4 border border-slate-200 bg-white/80 shadow-sm dark:border-slate-800 dark:bg-slate-900/60">
-                    <div className={`grid gap-4 ${gridColsClassName}`}>
-                      {filtered.map((ws) => {
-                        const slaveCount = ws.slave_count ?? 0;
-                        return (
-                          <div
-                            key={ws.name}
-                            className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4 dark:border-slate-800 dark:bg-slate-950/30"
-                          >
-                            <div className="flex items-start justify-between gap-2">
-                              <button
-                                type="button"
-                                className="min-w-0 flex-1 truncate text-left text-sm font-semibold text-emerald-700 hover:underline dark:text-emerald-300 lg:text-md xl:text-lg"
-                                onClick={() => openWorkspace(ws)}
-                                title={"Open " + ws.name}
-                              >
-                                {ws.name}
-                              </button>
+                {!loading && filtered.length > 0 && view === "grid" ? (
+                  <div
+                    className="grid gap-4"
+                    style={{ gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))" }}
+                  >
+                    {filtered.map((ws) => {
+                      const slaveCount = ws.slave_count ?? 0;
+                      return (
+                        <div
+                          key={ws.name}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => openWorkspace(ws)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              openWorkspace(ws);
+                            }
+                          }}
+                          aria-label={"Open " + ws.name}
+                          title={"Open " + ws.name}
+                          className="group relative cursor-pointer rounded-2xl border border-slate-200 bg-slate-50/70 p-4 transition hover:-translate-y-0.5 hover:border-emerald-500/40 hover:shadow-lg focus:outline-none focus-visible:border-emerald-500/60 focus-visible:ring-2 focus-visible:ring-emerald-500/20 dark:border-slate-800 dark:bg-slate-950/30 dark:hover:border-emerald-500/40 dark:hover:bg-slate-900/60"
+                        >
+                          <div className="absolute right-2.5 top-2.5 flex gap-1 opacity-0 transition focus-within:opacity-100 group-hover:opacity-100">
+                            <button
+                              type="button"
+                              title="Edit"
+                              aria-label={`Edit ${ws.name}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openEditModal(ws);
+                              }}
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-white/80 text-slate-500 transition hover:border-slate-400 hover:text-slate-700 dark:border-slate-700 dark:bg-slate-950/70 dark:text-slate-300 dark:hover:border-slate-500 dark:hover:text-slate-100"
+                            >
+                              <FiEdit3 className="h-3.5 w-3.5" aria-hidden="true" />
+                            </button>
+                            <button
+                              type="button"
+                              aria-label={`Delete ${ws.name}`}
+                              title={"Delete " + ws.name}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setDeleteError(null);
+                                setDeleteTarget(ws);
+                              }}
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-white/80 text-slate-500 transition hover:border-rose-500/60 hover:text-rose-600 dark:border-slate-700 dark:bg-slate-950/70 dark:text-slate-300 dark:hover:border-rose-400/60 dark:hover:text-rose-300"
+                            >
+                              <FiTrash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                            </button>
+                          </div>
 
-                              <button
-                                type="button"
-                                className="inline-flex items-center justify-center rounded-full border border-emerald-600/40 bg-emerald-500/10 px-2 py-2 text-sm font-semibold text-emerald-800 transition hover:border-emerald-500/60 hover:text-emerald-900 dark:border-emerald-500/10 dark:text-emerald-200 dark:hover:border-emerald-400 dark:hover:text-emerald-100"
-                                onClick={() => openWorkspace(ws)}
-                                title={"Open " + ws.name}
-                              >
-                                <MdOpenInNew className="h-4 w-4" aria-hidden="true" />
-                              </button>
-                              <button
-                                title="Edit"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  openEditModal(ws);
-                                }}
-                                className="inline-flex items-center justify-center rounded-full border border-slate-400/40 bg-slate-500/10 px-2 py-2 text-sm font-semibold text-slate-600 transition hover:border-slate-500/60 hover:text-slate-700 dark:border-slate-500/40 dark:text-slate-300 dark:hover:border-slate-400/60 dark:hover:text-slate-100"
-                              >
-                                <FiEdit3 className="h-4 w-4" aria-hidden="true" />
-                              </button>
-                              <button
-                                type="button"
-                                className="inline-flex items-center justify-center rounded-full border border-rose-600/40 bg-rose-500/10 px-2 py-2 text-sm font-semibold text-rose-800 transition hover:border-rose-500/60 hover:text-rose-900 dark:border-rose-500/40 dark:text-rose-200 dark:hover:border-rose-400/60 dark:hover:text-rose-100"
-                                onClick={() => {
-                                  setDeleteError(null);
-                                  setDeleteTarget(ws);
-                                }}
-                                aria-label={`Delete ${ws.name}`}
-                                title={"Delete this workspace " + ws.name}
-                              >
-                                <FiTrash2 className="h-4 w-4" aria-hidden="true" />
-                              </button>
+                          <div className="min-w-0 pr-12">
+                            <div className="truncate text-base font-semibold leading-tight text-emerald-700 group-hover:text-emerald-800 dark:text-emerald-300 dark:group-hover:text-emerald-200">
+                              {ws.name}
                             </div>
-
-                            {ws.description ? (
-                              <div className="truncate text-sm text-slate-600 dark:text-slate-300" title={ws.description}>
-                                {ws.description}
-                              </div>
-                            ) : (
-                              <div className="text-sm text-slate-500 dark:text-slate-400">No description</div>
-                            )}
-
-                            <div className="grid grid-cols-2 gap-2 text-xs text-slate-600 dark:text-slate-300">
-                              <div>
-                                <span className="text-slate-500 dark:text-slate-400">Slaves:</span>
-                                <span className="ml-1 font-semibold text-emerald-700 dark:text-emerald-400">{slaveCount}</span>
-                              </div>
-                              <div className="text-right text-slate-500 dark:text-slate-400">Updated: {formatLocalDateTime(ws.updated_at)}</div>
+                            <div
+                              className={`mt-0.5 truncate text-sm ${ws.description ? "text-slate-600 dark:text-slate-300" : "italic text-slate-400 dark:text-slate-500"}`}
+                              title={ws.description ?? undefined}
+                            >
+                              {ws.description ? ws.description : "No description"}
                             </div>
                           </div>
-                        );
-                      })}
-                    </div>
+
+                          <div className="mt-4 flex items-center justify-between gap-2 border-t border-slate-200/70 pt-3.5 font-mono text-xs text-slate-500 dark:border-slate-800/70 dark:text-slate-400">
+                            <span className="inline-flex items-center gap-1.5">
+                              <FiDatabase className="h-3.5 w-3.5" aria-hidden="true" />
+                              <span>
+                                <span className="font-semibold text-emerald-700 dark:text-emerald-400">{slaveCount}</span>{" "}
+                                {slaveCount === 1 ? "slave" : "slaves"}
+                              </span>
+                            </span>
+                            <span className="truncate tabular-nums">{formatLocalDateTime(ws.updated_at)}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 ) : null}
-              </div>
-            </section>
-          </main>
+
+                {!loading && filtered.length > 0 && view === "list" ? (
+                  <div className="overflow-x-auto rounded-2xl border border-slate-200 dark:border-slate-800">
+                    <table className="w-full min-w-160 table-fixed border-collapse text-left">
+                      <colgroup>
+                        <col />
+                        <col />
+                        <col className="w-24" />
+                        <col className="w-48" />
+                        <col className="w-16" />
+                      </colgroup>
+                      <thead>
+                        <tr className="border-b border-slate-200 bg-slate-100/60 text-[10.5px] uppercase tracking-wider text-slate-500 dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-400">
+                          <th className="px-4 py-2.5 font-semibold">Workspace</th>
+                          <th className="px-4 py-2.5 font-semibold">Description</th>
+                          <th className="px-4 py-2.5 font-semibold">Slaves</th>
+                          <th className="px-4 py-2.5 font-semibold">Updated</th>
+                          <th className="px-4 py-2.5" aria-hidden="true" />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filtered.map((ws) => {
+                          const slaveCount = ws.slave_count ?? 0;
+                          return (
+                            <tr
+                              key={ws.name}
+                              role="button"
+                              tabIndex={0}
+                              onClick={() => openWorkspace(ws)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" || e.key === " ") {
+                                  e.preventDefault();
+                                  openWorkspace(ws);
+                                }
+                              }}
+                              aria-label={"Open " + ws.name}
+                              title={"Open " + ws.name}
+                              className="group cursor-pointer border-b border-slate-200/70 transition last:border-b-0 hover:bg-slate-100/70 focus:outline-none focus-visible:bg-slate-100/70 dark:border-slate-800/70 dark:hover:bg-slate-900/50 dark:focus-visible:bg-slate-900/50"
+                            >
+                              <td className="truncate px-4 py-2.5 text-sm font-semibold text-emerald-700 group-hover:text-emerald-800 dark:text-emerald-300 dark:group-hover:text-emerald-200">
+                                {ws.name}
+                              </td>
+                              <td
+                                className={`truncate px-4 py-2.5 text-sm ${ws.description ? "text-slate-600 dark:text-slate-300" : "italic text-slate-400 dark:text-slate-500"}`}
+                                title={ws.description ?? undefined}
+                              >
+                                {ws.description ? ws.description : "No description"}
+                              </td>
+                              <td className="whitespace-nowrap px-4 py-2.5 font-mono text-xs text-slate-500 dark:text-slate-400">
+                                <span className="font-semibold text-emerald-700 dark:text-emerald-400">{slaveCount}</span> {slaveCount === 1 ? "slave" : "slaves"}
+                              </td>
+                              <td className="whitespace-nowrap px-4 py-2.5 font-mono text-xs tabular-nums text-slate-500 dark:text-slate-400">
+                                {formatLocalDateTime(ws.updated_at)}
+                              </td>
+                              <td className="px-4 py-2.5">
+                                <div className="flex justify-end gap-1 opacity-0 transition focus-within:opacity-100 group-hover:opacity-100">
+                                  <button
+                                    type="button"
+                                    title="Edit"
+                                    aria-label={`Edit ${ws.name}`}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      openEditModal(ws);
+                                    }}
+                                    className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-white/80 text-slate-500 transition hover:border-slate-400 hover:text-slate-700 dark:border-slate-700 dark:bg-slate-950/70 dark:text-slate-300 dark:hover:border-slate-500 dark:hover:text-slate-100"
+                                  >
+                                    <FiEdit3 className="h-3.5 w-3.5" aria-hidden="true" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    aria-label={`Delete ${ws.name}`}
+                                    title={"Delete " + ws.name}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setDeleteError(null);
+                                      setDeleteTarget(ws);
+                                    }}
+                                    className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-white/80 text-slate-500 transition hover:border-rose-500/60 hover:text-rose-600 dark:border-slate-700 dark:bg-slate-950/70 dark:text-slate-300 dark:hover:border-rose-400/60 dark:hover:text-rose-300"
+                                  >
+                                    <FiTrash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : null}
         </div>
       </div>
 

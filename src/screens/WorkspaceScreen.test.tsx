@@ -89,7 +89,7 @@ describe("WorkspaceScreen", () => {
 
     await screen.findByText("Alpha");
 
-    fireEvent.click(screen.getByRole("button", { name: "Alpha" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open Alpha" }));
 
     await waitFor(() => expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ name: "Alpha" })));
     expect(invokeMock).toHaveBeenCalledWith("touch_workspace", expect.objectContaining({ name: "Alpha" }));
