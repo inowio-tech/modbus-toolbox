@@ -841,7 +841,10 @@ export default function SlaveDetailPage() {
 
   const [selectedFunctionCode, setSelectedFunctionCode] = useState<number>(() => {
     try {
-      const stored = Number.parseInt(window.localStorage.getItem(`inowio.registers.functionCode.${workspace.name}`) ?? "", 10);
+      const stored = Number.parseInt(
+        window.localStorage.getItem(`inowio.registers.functionCode.${workspace.name}.${slaveId}`) ?? "",
+        10,
+      );
       return [1, 2, 3, 4, 5, 6, 15, 16].includes(stored) ? stored : 4;
     } catch {
       return 4;
@@ -1084,11 +1087,36 @@ export default function SlaveDetailPage() {
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(`inowio.registers.functionCode.${workspace.name}`, String(selectedFunctionCode));
+      window.localStorage.setItem(
+        `inowio.registers.functionCode.${workspace.name}.${slaveId}`,
+        String(selectedFunctionCode),
+      );
     } catch {
       // best-effort persistence
     }
+    // Intentionally keyed only on selectedFunctionCode: on slave navigation the
+    // component is reused and slaveId changes without fc changing, so writing
+    // here would persist the previous slave's fc into the new slave's key.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedFunctionCode]);
+
+  // Register type is remembered per slave (different slaves expose different
+  // register maps). The router reuses this component when navigating between
+  // slaves in the same workspace, so the lazy initializer above does not re-run;
+  // re-read the stored function code whenever the active slave changes.
+  useEffect(() => {
+    if (!slave) return;
+    try {
+      const stored = Number.parseInt(
+        window.localStorage.getItem(`inowio.registers.functionCode.${workspace.name}.${slave.id}`) ?? "",
+        10,
+      );
+      setSelectedFunctionCode([1, 2, 3, 4, 5, 6, 15, 16].includes(stored) ? stored : 4);
+    } catch {
+      // best-effort
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspace.name, slave?.id]);
 
   useEffect(() => {
     setHasUnsavedChanges?.(hasPageUnsaved);
