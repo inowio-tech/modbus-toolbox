@@ -28,6 +28,7 @@ function renderView(rows: RegisterRowDraft[]) {
       rows={rows}
       formatValue={(r) => (r.runtimeValue == null ? "—" : String(r.runtimeValue))}
       pinStorageKey="test.pins"
+      densityStorageKey="test.density"
       onOpenDetails={vi.fn()}
     />,
   );

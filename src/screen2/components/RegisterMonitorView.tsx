@@ -7,13 +7,13 @@ export type RegisterMonitorViewProps = {
   formatValue: (row: RegisterRowDraft) => string;
   /** Scopes the pinned watch-list to this slave + function code. */
   pinStorageKey: string;
+  /** Scopes the cards/rows density preference (e.g. per workspace). */
+  densityStorageKey: string;
   onOpenDetails: (key: string) => void;
 };
 
 type MonitorFilter = "all" | "changed" | "errors" | "pinned";
 type MonitorDensity = "cards" | "rows";
-
-const DENSITY_STORAGE_KEY = "inowio.monitor.density";
 
 function rowId(row: RegisterRowDraft): string {
   return row.address.trim() !== "" ? row.address : row.key;
@@ -64,13 +64,14 @@ export default function RegisterMonitorView({
   rows,
   formatValue,
   pinStorageKey,
+  densityStorageKey,
   onOpenDetails,
 }: RegisterMonitorViewProps) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<MonitorFilter>("all");
   const [density, setDensity] = useState<MonitorDensity>(() => {
     try {
-      const stored = window.localStorage.getItem(DENSITY_STORAGE_KEY);
+      const stored = window.localStorage.getItem(densityStorageKey);
       if (stored === "cards" || stored === "rows") return stored;
     } catch {
       // ignore
@@ -108,11 +109,11 @@ export default function RegisterMonitorView({
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(DENSITY_STORAGE_KEY, density);
+      window.localStorage.setItem(densityStorageKey, density);
     } catch {
       // ignore
     }
-  }, [density]);
+  }, [density, densityStorageKey]);
 
   // Change-flash: detect when an OK value differs from the previous poll.
   const formatRef = useRef(formatValue);

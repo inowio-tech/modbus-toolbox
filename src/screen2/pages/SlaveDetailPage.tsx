@@ -833,13 +833,20 @@ export default function SlaveDetailPage() {
   const [addressBase, setAddressBase] = useState<10 | 16>(10);
   const [registerView, setRegisterView] = useState<"edit" | "monitor">(() => {
     try {
-      return window.localStorage.getItem("inowio.registers.view") === "monitor" ? "monitor" : "edit";
+      return window.localStorage.getItem(`inowio.registers.view.${workspace.name}`) === "monitor" ? "monitor" : "edit";
     } catch {
       return "edit";
     }
   });
 
-  const [selectedFunctionCode, setSelectedFunctionCode] = useState<number>(4);
+  const [selectedFunctionCode, setSelectedFunctionCode] = useState<number>(() => {
+    try {
+      const stored = Number.parseInt(window.localStorage.getItem(`inowio.registers.functionCode.${workspace.name}`) ?? "", 10);
+      return [1, 2, 3, 4, 5, 6, 15, 16].includes(stored) ? stored : 4;
+    } catch {
+      return 4;
+    }
+  });
   const [registerRows, setRegisterRows] = useState<SlaveRegisterRowDraft[]>([]);
   const registerRowsRef = useRef<SlaveRegisterRowDraft[]>([]);
   const [loadingRows, setLoadingRows] = useState(false);
@@ -1069,11 +1076,19 @@ export default function SlaveDetailPage() {
 
   useEffect(() => {
     try {
-      window.localStorage.setItem("inowio.registers.view", registerView);
+      window.localStorage.setItem(`inowio.registers.view.${workspace.name}`, registerView);
     } catch {
       // best-effort persistence
     }
   }, [registerView]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(`inowio.registers.functionCode.${workspace.name}`, String(selectedFunctionCode));
+    } catch {
+      // best-effort persistence
+    }
+  }, [selectedFunctionCode]);
 
   useEffect(() => {
     setHasUnsavedChanges?.(hasPageUnsaved);
@@ -3566,6 +3581,7 @@ export default function SlaveDetailPage() {
               rows={rowsForTable}
               formatValue={formatValueForRow}
               pinStorageKey={`inowio.monitor.pins.${workspace.name}.${slave?.id ?? "none"}.${selectedFunctionCode}`}
+              densityStorageKey={`inowio.monitor.density.${workspace.name}`}
               onOpenDetails={(key) => setReadValueDetailsKey(key)}
             />
           ) : (
