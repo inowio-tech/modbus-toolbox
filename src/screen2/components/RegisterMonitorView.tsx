@@ -34,6 +34,20 @@ const DOT_CLASS: Record<RegisterRowDraft["runtimeStatus"], string> = {
   idle: "bg-slate-500",
 };
 
+// Flash highlight color follows the kind of change: a new value reads emerald,
+// a fault (illegal/error) reads amber/rose so it grabs attention too.
+function flashRingClass(status: RegisterRowDraft["runtimeStatus"]): string {
+  if (status === "error") return "border-rose-400/80";
+  if (status === "illegal") return "border-amber-400/80";
+  return "border-emerald-400/70";
+}
+
+function flashRowClass(status: RegisterRowDraft["runtimeStatus"]): string {
+  if (status === "error") return "bg-rose-500/12";
+  if (status === "illegal") return "bg-amber-500/12";
+  return "bg-emerald-500/12";
+}
+
 type DisplayRow = {
   id: string;
   key: string;
@@ -104,6 +118,10 @@ export default function RegisterMonitorView({
   const formatRef = useRef(formatValue);
   formatRef.current = formatValue;
   const prevValuesRef = useRef<Map<string, string>>(new Map());
+  // Per-register clear timers, so each card un-flashes ~1.4s after its OWN last
+  // change. (A single shared timer + effect cleanup would cancel the pending
+  // clear on the next poll and leave the border stuck green.)
+  const flashTimersRef = useRef<Map<string, number>>(new Map());
   const [flash, setFlash] = useState<Set<string>>(() => new Set());
 
   useEffect(() => {
@@ -111,12 +129,19 @@ export default function RegisterMonitorView({
     const prev = prevValuesRef.current;
     const changed: string[] = [];
     for (const r of rows) {
-      if (r.runtimeStatus !== "ok") continue;
+      // Ignore idle (never-read) registers; flash on any change to a read value
+      // OR a change in status (ok ⇄ illegal ⇄ error) so faults draw attention too.
+      if (r.runtimeStatus === "idle") continue;
       const id = rowId(r);
-      const value = fmt(r);
+      const signature =
+        r.runtimeStatus === "ok"
+          ? `ok:${fmt(r)}`
+          : r.runtimeStatus === "illegal"
+            ? "illegal"
+            : `error:${r.runtimeError ?? ""}`;
       const previous = prev.get(id);
-      if (previous !== undefined && previous !== value) changed.push(id);
-      prev.set(id, value);
+      if (previous !== undefined && previous !== signature) changed.push(id);
+      prev.set(id, signature);
     }
     if (changed.length === 0) return;
     setFlash((current) => {
@@ -124,15 +149,29 @@ export default function RegisterMonitorView({
       for (const id of changed) next.add(id);
       return next;
     });
-    const timer = window.setTimeout(() => {
-      setFlash((current) => {
-        const next = new Set(current);
-        for (const id of changed) next.delete(id);
-        return next;
-      });
-    }, 1600);
-    return () => window.clearTimeout(timer);
+    const timers = flashTimersRef.current;
+    for (const id of changed) {
+      const existing = timers.get(id);
+      if (existing !== undefined) window.clearTimeout(existing);
+      const handle = window.setTimeout(() => {
+        timers.delete(id);
+        setFlash((current) => {
+          const next = new Set(current);
+          next.delete(id);
+          return next;
+        });
+      }, 1400);
+      timers.set(id, handle);
+    }
   }, [rows]);
+
+  useEffect(() => {
+    const timers = flashTimersRef.current;
+    return () => {
+      for (const handle of timers.values()) window.clearTimeout(handle);
+      timers.clear();
+    };
+  }, []);
 
   function togglePin(id: string) {
     setPins((current) => {
@@ -331,8 +370,8 @@ type RowChildProps = {
 const MonitorRow = memo(function MonitorRow({ row, onTogglePin, onOpenDetails }: RowChildProps) {
   return (
     <tr
-      className={`cursor-pointer border-b border-slate-200/70 transition last:border-b-0 hover:bg-slate-100/70 dark:border-slate-800/70 dark:hover:bg-slate-900/50 ${
-        row.flashing ? "bg-emerald-500/10" : ""
+      className={`cursor-pointer border-b border-slate-200/70 transition-colors duration-700 last:border-b-0 hover:bg-slate-100/70 dark:border-slate-800/70 dark:hover:bg-slate-900/50 ${
+        row.flashing ? flashRowClass(row.status) : ""
       }`}
       onClick={() => onOpenDetails(row.key)}
     >
@@ -368,7 +407,9 @@ const MonitorRow = memo(function MonitorRow({ row, onTogglePin, onOpenDetails }:
         }`}
       >
         {row.valueLabel}
-        {row.flashing ? <span className="ml-1 text-[10px] text-emerald-500">▲</span> : null}
+        {row.flashing && row.status === "ok" ? (
+          <span className="ml-1 text-[10px] text-emerald-500">▲</span>
+        ) : null}
       </td>
       <td className="whitespace-nowrap px-3 py-1.5 font-mono text-xs text-slate-500 dark:text-slate-400">
         <span className={`mr-1.5 inline-block h-2 w-2 rounded-full ${DOT_CLASS[row.status]}`} />
@@ -385,11 +426,7 @@ const MonitorCard = memo(function MonitorCard({ row, onTogglePin, onOpenDetails 
   const isBad = row.status === "error" || row.status === "illegal";
   return (
     <div
-      className={`group relative cursor-pointer rounded-2xl border bg-slate-50/70 p-3.5 transition hover:border-emerald-500/40 dark:bg-slate-950/30 ${
-        row.flashing
-          ? "border-emerald-500/50"
-          : "border-slate-200 dark:border-slate-800"
-      }`}
+      className="group relative cursor-pointer rounded-2xl border border-slate-200 bg-slate-50/70 p-3.5 transition hover:border-emerald-500/40 dark:border-slate-800 dark:bg-slate-950/30"
       role="button"
       tabIndex={0}
       onClick={() => onOpenDetails(row.key)}
@@ -400,6 +437,11 @@ const MonitorCard = memo(function MonitorCard({ row, onTogglePin, onOpenDetails 
         }
       }}
     >
+      {/* Transient attention ring — appears on change, fades out over ~0.7s. */}
+      <span
+        aria-hidden="true"
+        className={`pointer-events-none absolute inset-0 rounded-2xl border-2 transition-opacity duration-700 ${flashRingClass(row.status)} ${row.flashing ? "opacity-100" : "opacity-0"}`}
+      />
       <button
         type="button"
         onClick={(e) => {
