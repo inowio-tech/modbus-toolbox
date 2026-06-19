@@ -36,7 +36,7 @@ use settings::{
 };
 
 use slaves::{
-    create_slave, delete_slave, list_slave_register_rows, list_slaves,
+    count_slave_register_rows, create_slave, delete_slave, list_slave_register_rows, list_slaves,
     save_slave_register_rows, update_slave,
 };
 
@@ -188,6 +188,7 @@ pub fn run() {
             update_slave,
             delete_slave,
             list_slave_register_rows,
+            count_slave_register_rows,
             save_slave_register_rows,
             list_slave_attachments,
             add_slave_attachment,

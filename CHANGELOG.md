@@ -6,6 +6,32 @@ All notable changes to this project are tracked here following [Keep a Changelog
 
 _No changes yet._
 
+## [0.3.1] - 2026-06-19
+### Added
+- **Live Monitor view** for the Read/Write Registers card. An Edit/Monitor
+  toggle reveals a read-only dashboard tuned for watching values at scale:
+  Cards / Dense-rows density, search by alias or address, status filters
+  (All / Changed / Errors / Pinned), per-register pinning, and a change
+  highlight that briefly flashes updated values (and faults) before fading.
+- **Grid / List views** for the workspace browser, in a redesigned full-width
+  layout, with the chosen view remembered between sessions.
+- **Slave status bar** pinned to the bottom of the slave page showing the
+  connection, polling state and interval, last-update age, and OK / Bad / Err
+  tallies.
+- Unsaved-changes warning when leaving a workspace with pending edits.
+
+### Changed
+- UI preferences now persist locally: the Edit/Monitor view and Monitor density
+  are remembered per workspace, and the selected register type is remembered
+  per slave, so each device returns to the register map you last viewed.
+- Nudged the dropdown chevron in from the far edge of every select control.
+- Tightened the slave detail header and registers card layout.
+
+### Fixed
+- The register change-highlight now fades after each update (and also flashes
+  on errors) instead of staying lit permanently.
+- PDF attachment preview rendering.
+
 ## [0.3.0] - 2026-05-23
 ### Changed
 - **Renamed the project from "Modbus Toolbox" to "Modbus Workbench"** to

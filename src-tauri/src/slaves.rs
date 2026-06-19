@@ -1,6 +1,6 @@
 use crate::db::open_workspace_db;
 use crate::models::{
-    SlaveCreate, SlaveItem, SlavePatch, SlaveRegisterRow, SlaveRegisterRowUpsert,
+    SlaveCreate, SlaveItem, SlavePatch, SlaveRegisterCount, SlaveRegisterRow, SlaveRegisterRowUpsert,
 };
 
 fn is_foreign_key_constraint_error(msg: &str) -> bool {
@@ -363,6 +363,39 @@ pub fn save_slave_register_rows(
         .map_err(|e| format!("failed to commit transaction: {e}"))?;
 
     Ok(())
+}
+
+#[tauri::command]
+pub fn count_slave_register_rows(
+    app: tauri::AppHandle,
+    name: String,
+) -> Result<Vec<SlaveRegisterCount>, String> {
+    let conn = open_workspace_db(&app, &name)?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT slave_id, function_code, COUNT(*) AS cnt
+             FROM slave_register_rows
+             GROUP BY slave_id, function_code
+             ORDER BY slave_id, function_code;",
+        )
+        .map_err(|e| format!("failed to prepare query: {e}"))?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(SlaveRegisterCount {
+                slave_id: row.get(0)?,
+                function_code: row.get(1)?,
+                count: row.get(2)?,
+            })
+        })
+        .map_err(|e| format!("failed to query register counts: {e}"))?;
+
+    let mut out: Vec<SlaveRegisterCount> = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| format!("failed to read register count row: {e}"))?);
+    }
+    Ok(out)
 }
 
 

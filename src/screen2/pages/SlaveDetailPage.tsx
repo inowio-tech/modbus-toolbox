@@ -6,6 +6,7 @@ import {
   FiActivity,
   FiArrowLeft,
   FiDownload,
+  FiEdit3,
   FiPlay,
   FiPlus,
   FiRefreshCw,
@@ -19,7 +20,15 @@ import { useErrorToast, useToast } from "../../components/ToastProvider";
 import { ConnectionCard } from "../components/ConnectionCard";
 import { PollConfigCard } from "../components/PollConfigCard";
 import { RegisterRowsTable, type RegisterRowDraft } from "../components/RegisterRowsTable";
+import RegisterMonitorView from "../components/RegisterMonitorView";
 import SlaveAttachmentsCard from "../components/SlaveAttachmentsCard";
+import SlaveStatusBar from "../components/SlaveStatusBar";
+import {
+  readFunctionCode,
+  readRegisterView,
+  writeFunctionCode,
+  writeRegisterView,
+} from "../utils/registerPrefs";
 import {
   ConnectionSettings as GlobalConnectionSettings,
   ConnectionSettingsForm,
@@ -828,8 +837,13 @@ export default function SlaveDetailPage() {
   const [disconnecting, setDisconnecting] = useState(false);
 
   const [addressBase, setAddressBase] = useState<10 | 16>(10);
+  const [registerView, setRegisterView] = useState<"edit" | "monitor">(() =>
+    readRegisterView(workspace.name),
+  );
 
-  const [selectedFunctionCode, setSelectedFunctionCode] = useState<number>(4);
+  const [selectedFunctionCode, setSelectedFunctionCode] = useState<number>(() =>
+    readFunctionCode(workspace.name, slaveId),
+  );
   const [registerRows, setRegisterRows] = useState<SlaveRegisterRowDraft[]>([]);
   const registerRowsRef = useRef<SlaveRegisterRowDraft[]>([]);
   const [loadingRows, setLoadingRows] = useState(false);
@@ -1056,6 +1070,27 @@ export default function SlaveDetailPage() {
   useEffect(() => {
     registerRowsRef.current = registerRows;
   }, [registerRows]);
+
+  useEffect(() => {
+    writeRegisterView(workspace.name, registerView);
+  }, [registerView, workspace.name]);
+
+  useEffect(() => {
+    writeFunctionCode(workspace.name, slaveId, selectedFunctionCode);
+    // Intentionally keyed only on selectedFunctionCode: on slave navigation the
+    // component is reused and slaveId changes without fc changing, so writing
+    // here would persist the previous slave's fc into the new slave's key.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedFunctionCode]);
+
+  // Register type is remembered per slave (different slaves expose different
+  // register maps). The router reuses this component when navigating between
+  // slaves in the same workspace, so the lazy initializer above does not re-run;
+  // re-read the stored function code whenever the active slave changes.
+  useEffect(() => {
+    if (!slave) return;
+    setSelectedFunctionCode(readFunctionCode(workspace.name, slave.id));
+  }, [workspace.name, slave?.id]);
 
   useEffect(() => {
     setHasUnsavedChanges?.(hasPageUnsaved);
@@ -3007,19 +3042,20 @@ export default function SlaveDetailPage() {
   }
 
   return (
-    <div className="flex flex-1 flex-col gap-4">
-      <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-6 shadow-inner shadow-black/5 sm:flex-row sm:items-center sm:justify-between dark:border-slate-800 dark:bg-slate-900/60 dark:shadow-black/30">
-        <div className="min-w-0">
-          <p className="text-sm uppercase font-semibold  dark:font-normal tracking-[0.35em] text-emerald-700 dark:text-emerald-300">Slave</p>
-          <div className="mt-2 truncate text-lg font-semibold text-slate-900 dark:text-slate-100">
+    <div className="flex min-h-full flex-1 flex-col gap-3">
+      <div className="sticky -top-4 z-20 -mt-4 mb-1 flex items-center justify-between gap-3 border-b border-slate-200 bg-white/90 px-4 py-2.5 backdrop-blur supports-backdrop-filter:bg-white/70 sm:-mx-4 dark:border-slate-800 dark:bg-slate-900/90 dark:supports-backdrop-filter:bg-slate-900/70">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="shrink-0 text-[11px] font-semibold uppercase tracking-[0.3em] text-emerald-700 dark:text-emerald-300">Slave</span>
+          <span className="shrink-0 text-slate-300 dark:text-slate-600">·</span>
+          <span className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">
             {slave ? `${slave.name}: Unit ID ${slave.unitId}` : "Loading..."}
-          </div>
+          </span>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
           <button
             type="button"
-            className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
+            className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-3 py-1.5 text-sm font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
             onClick={() => {
               if (!hasPageUnsaved && !pollingRows) {
                 navigate(`/app/${encodeURIComponent(workspace.name)}/slaves`);
@@ -3036,8 +3072,28 @@ export default function SlaveDetailPage() {
 
           <button
             type="button"
+            className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-2 py-1.5 text-sm font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
+            onClick={() => refresh()}
+            disabled={busyOrPolling}
+            title="Reload from saved configuration"
+          >
+            <FiRefreshCw className="h-4 w-4" aria-hidden="true" />
+          </button>
+
+          {hasPageUnsaved ? (
+            <span
+              className="inline-flex items-center gap-1.5 rounded-full bg-amber-500/10 px-2.5 py-1 text-xs font-semibold text-amber-700 dark:text-amber-300"
+              title="You have unsaved changes"
+            >
+              <span className="h-1.5 w-1.5 rounded-full bg-amber-500" aria-hidden="true" />
+              Unsaved
+            </span>
+          ) : null}
+
+          <button
+            type="button"
             title={`Save all changes ${CTRL_S}`}
-            className="inline-flex items-center gap-2 rounded-full border border-emerald-600/60 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-800 transition hover:border-emerald-500 hover:text-emerald-900 disabled:cursor-not-allowed disabled:opacity-60 dark:border-emerald-500/60 dark:text-emerald-200 dark:hover:border-emerald-400 dark:hover:text-emerald-100"
+            className="inline-flex items-center gap-2 rounded-full border border-emerald-600/60 bg-emerald-500/10 px-3 py-1.5 text-sm font-semibold text-emerald-800 transition hover:border-emerald-500 hover:text-emerald-900 disabled:cursor-not-allowed disabled:opacity-60 dark:border-emerald-500/60 dark:text-emerald-200 dark:hover:border-emerald-400 dark:hover:text-emerald-100"
             onClick={() => {
               void saveAll();
             }}
@@ -3045,15 +3101,6 @@ export default function SlaveDetailPage() {
           >
             <FiSave className="h-4 w-4" aria-hidden="true" />
             {savingRows || savingSlaveAddress || savingPollInterval ? "Saving..." : "Save"}
-          </button>
-
-          <button
-            type="button"
-            className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-2 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
-            onClick={() => refresh()}
-            disabled={busyOrPolling}
-          >
-            <FiRefreshCw className="h-4 w-4" aria-hidden="true" />
           </button>
         </div>
       </div>
@@ -3177,11 +3224,37 @@ export default function SlaveDetailPage() {
         </div>
       ) : null}
 
-      <div className="w-full rounded-2xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900/60">
-        <div className="flex flex-col gap-4">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+      <div className="w-full rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900/60">
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <div className="text-sm font-semibold text-slate-900 dark:text-slate-200">Read / Write Registers</div>
+            </div>
+            <div className="inline-flex items-center self-start rounded-full border border-slate-300 bg-slate-100 p-0.5 sm:self-auto dark:border-slate-700 dark:bg-white/5">
+              <button
+                type="button"
+                onClick={() => setRegisterView("edit")}
+                aria-pressed={registerView === "edit"}
+                className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold transition ${registerView === "edit"
+                  ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-200"
+                  : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+                  }`}
+              >
+                <FiEdit3 className="h-3.5 w-3.5" aria-hidden="true" />
+                Edit
+              </button>
+              <button
+                type="button"
+                onClick={() => setRegisterView("monitor")}
+                aria-pressed={registerView === "monitor"}
+                className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold transition ${registerView === "monitor"
+                  ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-200"
+                  : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+                  }`}
+              >
+                <FiActivity className="h-3.5 w-3.5" aria-hidden="true" />
+                Monitor
+              </button>
             </div>
           </div>
 
@@ -3193,7 +3266,7 @@ export default function SlaveDetailPage() {
               </label>
               <select
                 id="function-code"
-                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-hidden focus:border-emerald-600/60 focus:ring-2 focus:ring-emerald-500/10 sm:w-auto dark:border-slate-700 dark:bg-slate-950/40 dark:text-slate-100 dark:focus:border-emerald-500/60"
+                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 outline-hidden focus:border-emerald-600/60 focus:ring-2 focus:ring-emerald-500/10 sm:w-auto dark:border-slate-700 dark:bg-slate-950/40 dark:text-slate-100 dark:focus:border-emerald-500/60"
                 value={selectedFunctionCode}
                 onChange={(e) => {
                   stopRegisterPolling();
@@ -3217,7 +3290,7 @@ export default function SlaveDetailPage() {
               </label>
               <select
                 id="addr-base"
-                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-hidden focus:border-emerald-600/60 focus:ring-2 focus:ring-emerald-500/10 sm:w-auto dark:border-slate-700 dark:bg-slate-950/40 dark:text-slate-100 dark:focus:border-emerald-500/60"
+                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 outline-hidden focus:border-emerald-600/60 focus:ring-2 focus:ring-emerald-500/10 sm:w-auto dark:border-slate-700 dark:bg-slate-950/40 dark:text-slate-100 dark:focus:border-emerald-500/60"
                 value={addressBase}
                 onChange={(e) => {
                   stopRegisterPolling();
@@ -3249,7 +3322,7 @@ export default function SlaveDetailPage() {
               {!pollingRows ? (
                 <button
                   type="button"
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-4 py-1.5 text-sm font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
                   onClick={() => {
                     void readCurrentRegisters();
                   }}
@@ -3263,7 +3336,7 @@ export default function SlaveDetailPage() {
               {!pollingRows ? (
                 <button
                   type="button"
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-4 py-1.5 text-sm font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
                   onClick={() => startRegisterPolling()}
                   disabled={busyOrPolling || !slave}
                 >
@@ -3273,7 +3346,7 @@ export default function SlaveDetailPage() {
               ) : (
                 <button
                   type="button"
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-rose-500/60 bg-rose-500/10 px-4 py-2 text-sm font-semibold text-rose-800 transition hover:border-rose-500/70 hover:text-rose-900 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto dark:text-rose-200 dark:hover:border-rose-400 dark:hover:text-rose-100"
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-rose-500/60 bg-rose-500/10 px-4 py-1.5 text-sm font-semibold text-rose-800 transition hover:border-rose-500/70 hover:text-rose-900 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto dark:text-rose-200 dark:hover:border-rose-400 dark:hover:text-rose-100"
                   onClick={() => stopRegisterPolling()}
                   disabled={busy}
                 >
@@ -3282,10 +3355,10 @@ export default function SlaveDetailPage() {
                 </button>
               )}
 
-              {[1, 2, 3, 4].includes(effectiveReadFunctionCode(selectedFunctionCode)) ? (
+              {registerView === "edit" && [1, 2, 3, 4].includes(effectiveReadFunctionCode(selectedFunctionCode)) ? (
                 <button
                   type="button"
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-4 py-1.5 text-sm font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
                   onClick={() => setScanModalOpen(true)}
                   disabled={busyOrPolling || !slave}
                   title="Configure batch scan range and add discovered addresses"
@@ -3295,10 +3368,10 @@ export default function SlaveDetailPage() {
                 </button>
               ) : null}
 
-              {canWrite ? (
+              {registerView === "edit" && canWrite ? (
                 <button
                   type="button"
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60 sm:col-span-1 sm:w-auto dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-4 py-1.5 text-sm font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60 sm:col-span-1 sm:w-auto dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
                   onClick={() => writeAllSelectedRows()}
                   disabled={busyOrPolling || !slave}
                 >
@@ -3307,24 +3380,20 @@ export default function SlaveDetailPage() {
                 </button>
               ) : null}
 
-              <button
-                type="button"
-                className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
-                onClick={() => addRegisterRow()}
-                disabled={busyOrPolling}
-              >
-                <FiPlus className="h-4 w-4" aria-hidden="true" />
-                Add Row
-              </button>
-
-              {hasUnsavedChanges ? (
-                <span className="inline-flex items-center rounded-full bg-amber-500/10 px-3 py-2 text-xs font-semibold text-amber-800 dark:text-amber-200">
-                  Unsaved
-                </span>
+              {registerView === "edit" ? (
+                <button
+                  type="button"
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-4 py-1.5 text-sm font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
+                  onClick={() => addRegisterRow()}
+                  disabled={busyOrPolling}
+                >
+                  <FiPlus className="h-4 w-4" aria-hidden="true" />
+                  Add Row
+                </button>
               ) : null}
             </div>
             <div className="flex flex-wrap items-center justify-end gap-4">
-              {canWrite ? (
+              {registerView === "edit" && canWrite ? (
                 <div className="flex items-center justify-end gap-2">
                   <span className="text-xs text-slate-600 dark:text-slate-300">Read after write</span>
                   <button
@@ -3346,7 +3415,7 @@ export default function SlaveDetailPage() {
                 </div>
               ) : null}
 
-              {(selectedFunctionCode === 3 || selectedFunctionCode === 6 || selectedFunctionCode === 16) && (
+              {registerView === "edit" && (selectedFunctionCode === 3 || selectedFunctionCode === 6 || selectedFunctionCode === 16) && (
                 <div className="flex items-center justify-end gap-2 sm:min-w-45">
                   <span className="text-xs text-slate-600 dark:text-slate-300">Mask write</span>
                   <button
@@ -3369,7 +3438,7 @@ export default function SlaveDetailPage() {
               )}
             </div>
           </div>
-          {maskWriteVisible && (selectedFunctionCode === 3 || selectedFunctionCode === 6 || selectedFunctionCode === 16) && (
+          {registerView === "edit" && maskWriteVisible && (selectedFunctionCode === 3 || selectedFunctionCode === 6 || selectedFunctionCode === 16) && (
             <div className="mt-2 rounded-xl border border-slate-200 bg-slate-50/70 p-3 dark:border-slate-800/80 dark:bg-slate-950/30">
               <div className="mb-2 text-xs font-semibold tracking-wide text-slate-700 dark:text-slate-300">
                 Mask Write Register (0x16)
@@ -3487,7 +3556,7 @@ export default function SlaveDetailPage() {
                 <div className="mt-6 flex flex-col gap-2 sm:flex-row sm:justify-end">
                   <button
                     type="button"
-                    className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-4 py-1.5 text-sm font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
                     onClick={() => setScanModalOpen(false)}
                     disabled={busyOrPolling}
                   >
@@ -3509,6 +3578,15 @@ export default function SlaveDetailPage() {
             </div>
           ) : null}
 
+          {registerView === "monitor" ? (
+            <RegisterMonitorView
+              rows={rowsForTable}
+              formatValue={formatValueForRow}
+              pinStorageKey={`inowio.monitor.pins.${workspace.name}.${slave?.id ?? "none"}.${selectedFunctionCode}`}
+              densityStorageKey={`inowio.monitor.density.${workspace.name}`}
+              onOpenDetails={(key) => setReadValueDetailsKey(key)}
+            />
+          ) : (
           <RegisterRowsTable
             rows={rowsForTable}
             functionCode={selectedFunctionCode}
@@ -3583,25 +3661,32 @@ export default function SlaveDetailPage() {
               setReadValueDetailsKey(key);
             }}
           />
-        </div>
-        <div className="mt-4 rounded-full border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm dark:border-slate-800 dark:bg-slate-950/30">
-          <div className="inline-flex flex-wrap items-center gap-2 text-slate-700 dark:text-slate-200">
-            <span className={`h-2 w-2 rounded-full ${pollingRows ? "bg-emerald-400" : "bg-slate-600"}`} />
-            <span className={pollingRows ? "font-semibold text-emerald-700 dark:text-emerald-200" : "text-slate-600 dark:text-slate-300"}>
-              {pollingRows ? "Polling" : "Not polling"}
-            </span>
-            <span className="text-slate-400 dark:text-slate-500">|</span>
-            <span className="text-slate-600 dark:text-slate-300">Updated</span>
-            <span className="font-semibold text-slate-900 dark:text-slate-200">{runtimeSummary.ageLabel}</span>
-            <span className="text-slate-400 dark:text-slate-500">|</span>
-            <span className="text-emerald-700 dark:text-emerald-200">OK {runtimeSummary.ok}</span>
-            <span className="text-amber-700 dark:text-amber-200">Bad {runtimeSummary.illegal}</span>
-            <span className="text-rose-700 dark:text-rose-200">Err {runtimeSummary.error}</span>
-          </div>
+          )}
         </div>
       </div>
 
       <SlaveAttachmentsCard workspaceName={workspace.name} slaveId={slave?.id ?? null} />
+
+      <SlaveStatusBar
+        connected={connected}
+        connecting={connecting}
+        disconnecting={disconnecting}
+        connectionKind={slave?.connectionKind ?? conn?.kind ?? null}
+        endpointLabel={
+          (slave?.connectionKind ?? conn?.kind) === "serial"
+            ? conn?.serialPort
+              ? `${conn.serialPort}${conn.serialBaud ? ` @ ${conn.serialBaud}` : ""}`
+              : null
+            : conn?.tcpHost
+              ? `${conn.tcpHost}${conn.tcpPort ? `:${conn.tcpPort}` : ""}`
+              : null
+        }
+        unitId={slave?.unitId ?? null}
+        polling={pollingRows}
+        pollIntervalMs={Number.parseInt(pollIntervalMs, 10) || null}
+        summary={runtimeSummary}
+        pollingError={pollingRows ? pollingLastError : null}
+      />
 
       <ConfirmDialog
         open={leaveModalOpen}

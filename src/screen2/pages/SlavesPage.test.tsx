@@ -118,4 +118,53 @@ describe("SlavesPage", () => {
     fireEvent.click(listButton);
     expect(navigateMock).toHaveBeenCalledWith("1");
   });
+
+  it("shows non-zero register counts and opens the details modal", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_slaves") {
+        return Promise.resolve([
+          { id: 1, name: "Pump", unitId: 10, createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-02-02T00:00:00Z" },
+        ]);
+      }
+      if (command === "count_slave_register_rows") {
+        return Promise.resolve([
+          { slaveId: 1, functionCode: 1, count: 3 },
+          { slaveId: 1, functionCode: 3, count: 5 },
+        ]);
+      }
+      return Promise.resolve(null);
+    });
+
+    render(<SlavesPage />);
+
+    await screen.findByText(/Pump/);
+    // Inline shows only non-zero function codes.
+    expect(await screen.findByText("0x01")).toBeInTheDocument();
+    expect(screen.getByText("0x03")).toBeInTheDocument();
+    expect(screen.queryByText("0x02")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /register details/i }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(/Read Coils \(0x01\)/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/Read Holding Registers \(0x03\)/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/Total/)).toBeInTheDocument();
+  });
+
+  it("shows an empty state when a slave has no configured registers", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_slaves") {
+        return Promise.resolve([
+          { id: 2, name: "Idle", unitId: 7, createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z" },
+        ]);
+      }
+      if (command === "count_slave_register_rows") {
+        return Promise.resolve([]);
+      }
+      return Promise.resolve(null);
+    });
+
+    render(<SlavesPage />);
+    await screen.findByText(/Idle/);
+    expect(await screen.findByText(/no registers configured/i)).toBeInTheDocument();
+  });
 });

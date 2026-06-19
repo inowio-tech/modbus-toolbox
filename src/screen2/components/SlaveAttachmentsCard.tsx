@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import type { AttachmentItem, AttachmentPreview } from "../api/attachments";
 import { addSlaveAttachment, deleteSlaveAttachment, exportSlaveAttachment, listSlaveAttachments, readSlaveAttachment } from "../api/attachments";
+import { base64ToUint8Array } from "../utils/base64";
 import { FiTrash2, FiUpload, FiX } from "react-icons/fi";
 import { FaRegFileArchive } from "react-icons/fa";
 import { FaRegFilePdf } from "react-icons/fa6";
@@ -138,6 +139,7 @@ export default function SlaveAttachmentsCard({ workspaceName, slaveId }: Props) 
   const [previewing, setPreviewing] = useState(false);
   const [previewItem, setPreviewItem] = useState<AttachmentItem | null>(null);
   const [previewData, setPreviewData] = useState<AttachmentPreview | null>(null);
+  const [pdfObjectUrl, setPdfObjectUrl] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [deleteConfirmItem, setDeleteConfirmItem] = useState<AttachmentItem | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -174,6 +176,29 @@ export default function SlaveAttachmentsCard({ workspaceName, slaveId }: Props) 
       cancelled = true;
     };
   }, [workspaceName, slaveId]);
+
+  // Render PDFs from a blob: URL rather than a data: URL. Chromium/WebView2
+  // blanks out PDFs loaded from large data: URLs (a multi-MB datasheet exceeds
+  // the practical data: URL limit), which is the "sometimes white screen" bug.
+  // Blob URLs reference the bytes by a short handle, so there is no length cap.
+  useEffect(() => {
+    if (previewData?.kind !== "pdf") {
+      setPdfObjectUrl(null);
+      return;
+    }
+    let url: string | null = null;
+    try {
+      const bytes = base64ToUint8Array(previewData.data);
+      const blob = new Blob([bytes], { type: previewData.mimeType || "application/pdf" });
+      url = URL.createObjectURL(blob);
+      setPdfObjectUrl(url);
+    } catch {
+      setPdfObjectUrl(null);
+    }
+    return () => {
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [previewData]);
 
   async function handleBrowse() {
     if (!workspaceName || slaveId == null) return;
@@ -523,7 +548,7 @@ export default function SlaveAttachmentsCard({ workspaceName, slaveId }: Props) 
                 <div className="flex h-full flex-col gap-2">
                   <iframe
                     title={previewItem.displayName}
-                    src={`data:${previewData.mimeType};base64,${previewData.data}`}
+                    src={pdfObjectUrl ?? undefined}
                     className="h-full w-full rounded-lg border-0 bg-white dark:bg-slate-950"
                   />
                   <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-600 dark:text-slate-400">

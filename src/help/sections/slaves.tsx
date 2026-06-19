@@ -16,9 +16,14 @@ const slavesSection: HelpSectionDefinition = {
     "scan",
     "attachments",
     "read after write",
+    "monitor",
+    "live values",
+    "pin",
+    "watch list",
+    "status bar",
   ],
   searchText:
-    "Learn how to maintain the slaves list, open slave detail, configure connections, poll intervals, register selector, toolbar actions, register rows, mask write, row actions, read-after-write, attachments, switching behavior, address format, and safety rules.",
+    "Learn how to maintain the slaves list, open slave detail, configure connections, poll intervals, register selector, Edit and Monitor views, live monitor dashboard with density, search, filters and pinning, status bar, toolbar actions, register rows, mask write, row actions, read-after-write, attachments, switching behavior, address format, and safety rules.",
   anchors: [
     { id: "list-overview", label: "Slaves list overview" },
     { id: "list-layout", label: "List layout" },
@@ -34,8 +39,11 @@ const slavesSection: HelpSectionDefinition = {
     { id: "detail-connection", label: "Connection card" },
     { id: "detail-identity", label: "Identity & poll" },
     { id: "detail-registers", label: "Registers card" },
+    { id: "detail-views", label: "Edit vs Monitor" },
+    { id: "detail-monitor", label: "Monitor dashboard" },
     { id: "detail-toolbar", label: "Detail toolbar" },
     { id: "detail-table", label: "Register table" },
+    { id: "detail-statusbar", label: "Status bar" },
     { id: "detail-mask", label: "Mask write" },
     { id: "detail-read-after", label: "Read after write" },
     { id: "detail-attachments", label: "Attachments" },
@@ -144,6 +152,27 @@ const slavesSection: HelpSectionDefinition = {
         </ul>
         <p>Switching types clears unsaved rows and loads the saved set for that function—preventing cross-contamination between read/write operations. Address format (Dec / Hex) only changes how you type values.</p>
       </SectionBlock>
+      <SectionBlock section="slaves" anchor="detail-views" title="Edit vs Monitor view">
+        <p>
+          The Registers card has two modes, toggled at the top of the card. Your choice is remembered <strong>per workspace</strong>.
+        </p>
+        <ul className="list-disc space-y-1 pl-5">
+          <li><strong>Edit</strong> — the full editable table where you build and maintain the register map: add rows, set data types and byte order, scan, and write.</li>
+          <li><strong>Monitor</strong> — a read-only live dashboard tuned for watching values during polling. Editing actions are hidden; only <strong>Read All</strong> and <strong>Poll</strong> remain.</li>
+        </ul>
+        <p>Switch to Monitor once a map is built and you just want to watch it; switch back to Edit to make changes.</p>
+      </SectionBlock>
+      <SectionBlock section="slaves" anchor="detail-monitor" title="Monitor dashboard (live values at scale)">
+        <p>Monitor stays readable whether a slave exposes ten registers or several hundred:</p>
+        <ul className="list-disc space-y-1 pl-5">
+          <li><strong>Density toggle</strong> — switch between roomy <em>Cards</em> and compact <em>Dense rows</em>. Large maps default to rows; the choice is saved per workspace.</li>
+          <li><strong>Search</strong> — filter by alias or address instantly.</li>
+          <li><strong>Status filters</strong> — <em>All</em>, <em>Changed</em> (recently updated), <em>Errors</em> (illegal/error responses), and <em>Pinned</em>.</li>
+          <li><strong>Pinning</strong> — star the registers you care about, then use the Pinned filter to build a focused watch-list. Pins are saved per slave and register type.</li>
+          <li><strong>Change highlight</strong> — when a value updates (or a register starts erroring) its card briefly flashes—green for a new value, amber/rose for a fault—then fades, so your eye catches exactly what moved.</li>
+        </ul>
+        <p>Click any value to open the same Register Value Details microscope available in Edit.</p>
+      </SectionBlock>
       <SectionBlock section="slaves" anchor="detail-toolbar" title="Detail toolbar actions">
         <ul className="list-disc space-y-1 pl-5">
           <li><strong>Read All</strong> — single-shot read of every row.</li>
@@ -152,16 +181,30 @@ const slavesSection: HelpSectionDefinition = {
           <li><strong>Add Row</strong> — manual entry for known addresses, write-only rows, or mask-write prep.</li>
           <li><strong>Write All</strong> — executes batch writes for 0x0F/0x10 when you explicitly trigger it.</li>
         </ul>
+        <p className="text-xs text-slate-500 dark:text-slate-400">
+          These editing actions live in <strong>Edit</strong> view. In <strong>Monitor</strong> view only Read All and Poll appear.
+        </p>
       </SectionBlock>
       <SectionBlock section="slaves" anchor="detail-table" title="Register table columns">
         <ul className="list-disc space-y-1 pl-5">
-          <li><strong>Local Address</strong> — base-relative (0-based) address aligned with the datasheet.</li>
+          <li><strong>Register Address</strong> — base-relative (0-based) address aligned with the datasheet.</li>
           <li><strong>Alias</strong> — friendly label reused by Analyzer, Logs, Signals.</li>
           <li><strong>Data Type</strong> — drives register count and decode logic (u16/i16, i32/u32, f32/f64, etc.).</li>
           <li><strong>Byte Order</strong> — ABCD/BADC/CDAB/DCBA + swap combos to fix vendor endianness.</li>
           <li><strong>Value Format</strong> — Dec / Hex / Binary / ASCII for display only.</li>
           <li><strong>Read Value</strong> — live reading (read types); click to open Register Value Details.</li>
           <li><strong>Value to Write</strong> — editable for write functions.</li>
+        </ul>
+      </SectionBlock>
+      <SectionBlock section="slaves" anchor="detail-statusbar" title="Slave status bar">
+        <p>
+          A sticky status bar sits at the bottom of the slave page so the device's live state stays visible while you scroll. It summarizes:
+        </p>
+        <ul className="list-disc space-y-1 pl-5">
+          <li><strong>Connection</strong> — kind (TCP/RTU), endpoint, and unit ID.</li>
+          <li><strong>Polling state</strong> — Polling or Idle, plus the active interval.</li>
+          <li><strong>Last update</strong> — how long ago the most recent read completed.</li>
+          <li><strong>Result tally</strong> — OK / Bad / Err counts for the current register set.</li>
         </ul>
       </SectionBlock>
       <SectionBlock section="slaves" anchor="detail-mask" title="Mask write (workflow)">
@@ -222,6 +265,9 @@ const slavesSection: HelpSectionDefinition = {
         <p>
           Changing register types swaps the dataset, loads saved rows for that type, and clears unsaved edits. This prevents accidental writes, keeps incompatible operations apart, and is by design.
         </p>
+        <p>
+          Each slave also <strong>remembers the register type you last viewed</strong>, so reopening a device drops you straight back into the same set instead of resetting to a default. Because different slaves expose different maps, this memory is kept per slave.
+        </p>
       </SectionBlock>
       <SectionBlock section="slaves" anchor="registers-address" title="Address format (Dec / Hex)">
         <p>
@@ -251,7 +297,7 @@ const slavesSection: HelpSectionDefinition = {
       <SectionBlock section="slaves" anchor="registers-rows" title="Register row anatomy">
         <p>Each row equals a logical Modbus item:</p>
         <ul className="list-disc space-y-1 pl-5">
-          <li><strong>Local Address</strong> — matches device docs.</li>
+          <li><strong>Register Address</strong> — matches device docs.</li>
           <li><strong>Alias</strong> — meaningful label reused everywhere.</li>
           <li><strong>Data Type</strong> — controls register count and decode.</li>
           <li><strong>Byte Order</strong> — golden rule: if the value looks wrong, byte order probably is.</li>

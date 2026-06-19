@@ -101,6 +101,7 @@ export default function AnalyzerConfigureSignalsModal(props: Props) {
   }, [props.signals, selectedSignalId]);
 
   const [saving, setSaving] = useState(false);
+  const [loadedRowsKey, setLoadedRowsKey] = useState<string | null>(null);
   const [registerRows, setRegisterRows] = useState<SlaveRegisterRow[]>([]);
 
   const [signalId, setSignalId] = useState<string>("");
@@ -296,6 +297,7 @@ export default function AnalyzerConfigureSignalsModal(props: Props) {
     if (sid == null) {
       setRegisterRows([]);
       setRegisterRowId(null);
+      setLoadedRowsKey(null);
       return;
     }
 
@@ -312,6 +314,7 @@ export default function AnalyzerConfigureSignalsModal(props: Props) {
         const rows = await listSlaveRegisterRows(props.workspaceName, sid, functionCode);
         if (cancelled) return;
         setRegisterRows(rows);
+        setLoadedRowsKey(`${sid}:${functionCode}`);
 
         const prefillAfterLoad = editPrefillRef.current;
         setRegisterRowId((current) => {
@@ -352,7 +355,7 @@ export default function AnalyzerConfigureSignalsModal(props: Props) {
           return current;
         });
       } catch (e) {
-        props.onError(String(e));
+        if (!cancelled) props.onError(String(e));
       }
     })();
 
@@ -453,6 +456,25 @@ export default function AnalyzerConfigureSignalsModal(props: Props) {
     !signalIdValidation.error &&
     decoderValidation.ok &&
     !registerValidation.error;
+
+  useEffect(() => {
+    if (!props.open) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key !== "Escape") return;
+      if (saving || deleting) return;
+      // Escape dismisses the nested delete confirmation first when it is open.
+      if (signalIdToDelete != null) {
+        setSignalIdToDelete(null);
+        e.preventDefault();
+        return;
+      }
+      e.preventDefault();
+      if (mode === "view") props.onClose();
+      else setMode("view");
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [props.open, props.onClose, mode, saving, deleting, signalIdToDelete]);
 
   if (!props.open) return null;
 
@@ -566,11 +588,16 @@ export default function AnalyzerConfigureSignalsModal(props: Props) {
 
   if (mode === "view") {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-xs">
-        <div className="w-full max-w-3xl overflow-hidden rounded-2xl border border-slate-200 bg-white text-slate-900 shadow-2xl dark:border-slate-800/70 dark:bg-slate-900/60 dark:text-slate-100">
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm">
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="analyzer-signals-modal-title"
+          className="w-full max-w-3xl overflow-hidden rounded-2xl border border-slate-200 bg-white text-slate-900 shadow-2xl dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100"
+        >
           <div className="flex items-center justify-between gap-2 border-b border-slate-200 bg-slate-50/70 px-4 py-3 dark:border-slate-800 dark:bg-slate-950/40">
             <div className="min-w-0">
-              <div className="truncate text-sm font-semibold text-emerald-700 dark:text-emerald-400">
+              <div id="analyzer-signals-modal-title" className="truncate text-sm font-semibold text-emerald-700 dark:text-emerald-400">
                 Signals: <span className="text-slate-900 dark:text-slate-100">{props.signals.length}</span>
               </div>
               <div className="mt-0.5 text-xs text-slate-600 dark:text-slate-400">Manage analyzer signals</div>
@@ -578,7 +605,7 @@ export default function AnalyzerConfigureSignalsModal(props: Props) {
             <div className="inline-flex gap-2">
               <button
                 type="button"
-                className="inline-flex items-center gap-2 rounded-full border border-emerald-600/60 bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-800 transition hover:border-emerald-500 hover:text-emerald-900 disabled:opacity-60 dark:border-emerald-500/60 dark:text-slate-100 dark:hover:border-slate-600 dark:hover:text-slate-100"
+                className="inline-flex items-center gap-2 rounded-full border border-emerald-600/60 bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-800 transition hover:border-emerald-500 hover:text-emerald-900 disabled:cursor-not-allowed disabled:opacity-60 dark:border-emerald-500/60 dark:text-emerald-200 dark:hover:border-emerald-400 dark:hover:text-emerald-100"
                 onClick={() => {
                   setSelectedSignalId("");
                   setMode("add");
@@ -649,7 +676,7 @@ export default function AnalyzerConfigureSignalsModal(props: Props) {
                         <div className="flex items-center gap-2">
                           <button
                             type="button"
-                            className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-700 transition hover:border-slate-400 disabled:opacity-60 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
+                            className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
                             onClick={() => {
                               setSelectedSignalId(s.id);
                               setMode("edit");
@@ -662,7 +689,7 @@ export default function AnalyzerConfigureSignalsModal(props: Props) {
                           </button>
                           <button
                             type="button"
-                            className="inline-flex items-center gap-2 rounded-lg border border-rose-500/60 bg-rose-500/10 px-2 py-1 text-[11px] font-semibold text-rose-800 transition hover:border-rose-500/70 hover:text-rose-900 disabled:opacity-60 dark:text-rose-100 dark:hover:border-rose-400 dark:hover:text-rose-50"
+                            className="inline-flex items-center gap-2 rounded-lg border border-rose-500/60 bg-rose-500/10 px-2 py-1 text-[11px] font-semibold text-rose-800 transition hover:border-rose-500/70 hover:text-rose-900 disabled:cursor-not-allowed disabled:opacity-60 dark:text-rose-100 dark:hover:border-rose-400 dark:hover:text-rose-50"
                             onClick={() => {
                               setSignalIdToDelete(s.id);
                             }}
@@ -707,12 +734,17 @@ export default function AnalyzerConfigureSignalsModal(props: Props) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-xs">
-      <div className="w-full max-w-4xl overflow-hidden rounded-2xl border border-slate-200 bg-white text-slate-900 shadow-2xl dark:border-slate-800/70 dark:bg-slate-900/60 dark:text-slate-100">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="analyzer-signal-editor-title"
+        className="w-full max-w-4xl overflow-hidden rounded-2xl border border-slate-200 bg-white text-slate-900 shadow-2xl dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100"
+      >
         <div className="flex items-center justify-between gap-2 border-b border-slate-200 bg-slate-50/70 px-4 py-3 dark:border-slate-800 dark:bg-slate-950/40">
 
           <div className="min-w-0">
-            <div className="truncate text-sm font-semibold text-emerald-700 dark:text-emerald-400">
+            <div id="analyzer-signal-editor-title" className="truncate text-sm font-semibold text-emerald-700 dark:text-emerald-400">
               {mode === "add" ? "New signal" : "Edit signal"}
             </div>
             <div className="mt-0.5 text-xs text-slate-600 dark:text-slate-400">Signal definition + decoder configuration</div>
@@ -720,7 +752,7 @@ export default function AnalyzerConfigureSignalsModal(props: Props) {
 
           <button
             type="button"
-            className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-2 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-400 disabled:opacity-60 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
+            className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-2 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
             onClick={() => setMode("view")}
             disabled={saving || deleting}
             title="Close"
@@ -730,7 +762,6 @@ export default function AnalyzerConfigureSignalsModal(props: Props) {
         </div>
 
         <div className="max-h-[75vh] overflow-auto p-4">
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800/70 dark:bg-slate-900/60">
             <div className="mt-1 grid grid-cols-1 gap-3">
               {registerValidation.error ? (
                 <div className="text-xs text-rose-800 dark:text-rose-200">{registerValidation.error}</div>
@@ -791,6 +822,12 @@ export default function AnalyzerConfigureSignalsModal(props: Props) {
                   </select>
                 </div>
               </div>
+
+              {canEdit && slaveId != null && loadedRowsKey === `${slaveId}:${functionCode}` && registerRows.length === 0 ? (
+                <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-800 dark:text-amber-200">
+                  This register type has no rows for the selected slave. Add register rows for it on the Slaves page, or choose a different register type.
+                </div>
+              ) : null}
 
               <div>
                 <div className="text-xs font-semibold text-slate-700 dark:text-slate-200">Signal ID</div>
@@ -920,21 +957,9 @@ export default function AnalyzerConfigureSignalsModal(props: Props) {
               </div>
 
               <div className="mt-2 flex flex-col justify-end gap-2 sm:flex-row">
-
                 <button
                   type="button"
-                  className="inline-flex items-center justify-center gap-2 rounded-full border border-emerald-600/60 bg-emerald-500/10 px-4 py-2 text-xs font-semibold text-emerald-800 transition hover:border-emerald-500 hover:text-emerald-900 disabled:opacity-60 dark:border-emerald-500/60 dark:text-emerald-200 dark:hover:border-emerald-400 dark:hover:text-emerald-100"
-                  onClick={() => void save()}
-                  disabled={!canSave}
-                  title="Save"
-                >
-                  <FiSave className="h-4 w-4" aria-hidden="true" />
-                  {saving ? "Saving..." : "Save"}
-                </button>
-
-                <button
-                  type="button"
-                  className="rounded-full border border-slate-300 bg-slate-100 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-400 disabled:opacity-60 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
+                  className="rounded-full border border-slate-300 bg-slate-100 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60 sm:mr-auto dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
                   onClick={() => resetEditorForm()}
                   disabled={saving || deleting || !canEdit}
                   title="Reset"
@@ -943,12 +968,22 @@ export default function AnalyzerConfigureSignalsModal(props: Props) {
                 </button>
                 <button
                   type="button"
-                  className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-400 disabled:opacity-60 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
+                  className="inline-flex items-center justify-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
                   onClick={() => setMode("view")}
                   disabled={saving || deleting}
                   title="Close"
                 >
                   Cancel
+                </button>
+                <button
+                  type="button"
+                  className="inline-flex items-center justify-center gap-2 rounded-full border border-emerald-600/60 bg-emerald-500/10 px-4 py-2 text-xs font-semibold text-emerald-800 transition hover:border-emerald-500 hover:text-emerald-900 disabled:cursor-not-allowed disabled:opacity-60 dark:border-emerald-500/60 dark:text-emerald-200 dark:hover:border-emerald-400 dark:hover:text-emerald-100"
+                  onClick={() => void save()}
+                  disabled={!canSave}
+                  title="Save"
+                >
+                  <FiSave className="h-4 w-4" aria-hidden="true" />
+                  {saving ? "Saving..." : "Save"}
                 </button>
               </div>
 
@@ -956,7 +991,6 @@ export default function AnalyzerConfigureSignalsModal(props: Props) {
                 <div className="text-xs text-slate-600 dark:text-slate-400">Fix decoder validation errors to enable save.</div>
               ) : null}
             </div>
-          </div>
         </div>
       </div>
     </div>

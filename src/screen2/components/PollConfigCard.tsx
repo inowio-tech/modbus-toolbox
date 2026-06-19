@@ -24,8 +24,8 @@ export function PollConfigCard({
   onChangeBaseAddress,
 }: PollConfigCardProps) {
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900/60">
-      <div className="flex flex-col gap-4">
+    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900/60">
+      <div className="flex flex-col gap-3">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div className="grid gap-2">
             <label className="text-sm font-semibold text-slate-700 dark:text-slate-200" htmlFor="slave-address">
@@ -36,7 +36,7 @@ export function PollConfigCard({
               <input
                 id="slave-address"
                 type="number"
-                className="w-full flex-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-hidden focus:border-emerald-600/60 focus:ring-2 focus:ring-emerald-500/10 dark:border-slate-700 dark:bg-slate-950/40 dark:text-slate-100 dark:focus:border-emerald-500/60"
+                className="w-full flex-1 rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 outline-hidden focus:border-emerald-600/60 focus:ring-2 focus:ring-emerald-500/10 dark:border-slate-700 dark:bg-slate-950/40 dark:text-slate-100 dark:focus:border-emerald-500/60"
                 value={slaveAddress}
                 onChange={(e) => onChangeSlaveAddress(e.currentTarget.value)}
                 min={0}
@@ -59,7 +59,7 @@ export function PollConfigCard({
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
               <select
                 id="base-address"
-                className="w-full flex-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-hidden focus:border-emerald-600/60 focus:ring-2 focus:ring-emerald-500/10 dark:border-slate-700 dark:bg-slate-950/40 dark:text-slate-100 dark:focus:border-emerald-500/60"
+                className="w-full flex-1 rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 outline-hidden focus:border-emerald-600/60 focus:ring-2 focus:ring-emerald-500/10 dark:border-slate-700 dark:bg-slate-950/40 dark:text-slate-100 dark:focus:border-emerald-500/60"
                 value={baseAddress}
                 onChange={(e) => {
                   const v = (e.currentTarget.value === "1" ? "1" : "0") as "0" | "1";
@@ -87,7 +87,7 @@ export function PollConfigCard({
               <input
                 id="poll-interval"
                 type="number"
-                className="w-full flex-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-hidden focus:border-emerald-600/60 focus:ring-2 focus:ring-emerald-500/10 dark:border-slate-700 dark:bg-slate-950/40 dark:text-slate-100 dark:focus:border-emerald-500/60"
+                className="w-full flex-1 rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 outline-hidden focus:border-emerald-600/60 focus:ring-2 focus:ring-emerald-500/10 dark:border-slate-700 dark:bg-slate-950/40 dark:text-slate-100 dark:focus:border-emerald-500/60"
                 value={pollIntervalMs}
                 onChange={(e) => onChangePollInterval(e.currentTarget.value)}
                 min={1}
