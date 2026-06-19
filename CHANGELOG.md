@@ -4,6 +4,9 @@ All notable changes to this project are tracked here following [Keep a Changelog
 
 ## [Unreleased]
 
+_No changes yet._
+
+## [0.3.2] - 2026-06-19
 ### Fixed
 - RTU connect no longer fails with "modbus probe exception: Illegal data
   address" on devices whose holding registers don't start at address 0 (and on
