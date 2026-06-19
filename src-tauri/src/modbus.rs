@@ -157,6 +157,17 @@ mod tests {
         assert_eq!(addr.to_string(), "127.0.0.1:502");
         assert!(workspace_tcp_addr(&tcp_settings(Some(70000))).is_err());
     }
+
+    #[test]
+    fn probe_reply_treats_value_and_exception_as_reachable() {
+        // A normal value reply means the slave answered.
+        assert!(probe_reply_is_reachable::<Vec<u16>, &str>(Ok(vec![0])).is_ok());
+        // A Modbus exception reply (e.g. Illegal data address) ALSO means the
+        // slave answered — many devices have no holding register 0 — so the
+        // connect probe must NOT treat it as a failure. Regression guard for
+        // the "modbus probe exception: Illegal data address" connect bug.
+        assert!(probe_reply_is_reachable::<Vec<u16>, &str>(Err("illegal data address")).is_ok());
+    }
 }
 
 fn lookup_slave_id_and_address_offset(
@@ -424,9 +435,31 @@ async fn probe_rtu_session(
     .map_err(|_| format!("modbus request timed out after {timeout_ms} ms"))?
     .map_err(|e| format!("modbus probe failed: {e}"))?;
 
-    match res {
+    // `res` is the slave's reply: a value (Ok) or a Modbus exception (Err).
+    // Either way the slave answered, so the link is up — see
+    // probe_reply_is_reachable for why an exception must NOT fail the connect.
+    probe_reply_is_reachable(res)
+}
+
+/// Decide whether an RTU connect probe's *reply* means the slave is reachable.
+///
+/// The probe reads a register purely to confirm a slave answers at this unit
+/// id. A normal value reply (`Ok`) OR a Modbus exception reply (`Err`, e.g.
+/// Illegal data address) both prove the link works and a slave is present:
+///   - the SHT20 and many devices have no holding register 0 (theirs start at
+///     0x0101), and
+///   - input-register-only sensors have no holding registers at all,
+/// yet all of them still answer. Only timeout / transport errors — handled by
+/// the caller before this point — mean "not reachable" (wrong port/baud/unit
+/// id or a dead bus). Generic over the reply payload/error so it stays
+/// decoupled from the exact `tokio-modbus` exception type.
+fn probe_reply_is_reachable<T, E>(reply: Result<T, E>) -> Result<(), String> {
+    match reply {
+        // Normal reply: slave present, register read succeeded.
         Ok(_) => Ok(()),
-        Err(e) => Err(format!("modbus probe exception: {e}")),
+        // Modbus exception reply (e.g. Illegal data address): the slave still
+        // answered, so the link is up — treat as connected, not a failure.
+        Err(_) => Ok(()),
     }
 }
 

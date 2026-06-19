@@ -4,7 +4,12 @@ All notable changes to this project are tracked here following [Keep a Changelog
 
 ## [Unreleased]
 
-_No changes yet._
+### Fixed
+- RTU connect no longer fails with "modbus probe exception: Illegal data
+  address" on devices whose holding registers don't start at address 0 (and on
+  input-register-only sensors). The connect probe now treats a Modbus exception
+  reply as a successful connection — the slave answering at all confirms the
+  link; only a timeout or transport error means the device is unreachable.
 
 ## [0.3.1] - 2026-06-19
 ### Added
