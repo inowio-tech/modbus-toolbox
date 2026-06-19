@@ -6,6 +6,7 @@ import {
   FiActivity,
   FiArrowLeft,
   FiDownload,
+  FiEdit3,
   FiPlay,
   FiPlus,
   FiRefreshCw,
@@ -19,6 +20,7 @@ import { useErrorToast, useToast } from "../../components/ToastProvider";
 import { ConnectionCard } from "../components/ConnectionCard";
 import { PollConfigCard } from "../components/PollConfigCard";
 import { RegisterRowsTable, type RegisterRowDraft } from "../components/RegisterRowsTable";
+import RegisterMonitorView from "../components/RegisterMonitorView";
 import SlaveAttachmentsCard from "../components/SlaveAttachmentsCard";
 import SlaveStatusBar from "../components/SlaveStatusBar";
 import {
@@ -829,6 +831,13 @@ export default function SlaveDetailPage() {
   const [disconnecting, setDisconnecting] = useState(false);
 
   const [addressBase, setAddressBase] = useState<10 | 16>(10);
+  const [registerView, setRegisterView] = useState<"edit" | "monitor">(() => {
+    try {
+      return window.localStorage.getItem("inowio.registers.view") === "monitor" ? "monitor" : "edit";
+    } catch {
+      return "edit";
+    }
+  });
 
   const [selectedFunctionCode, setSelectedFunctionCode] = useState<number>(4);
   const [registerRows, setRegisterRows] = useState<SlaveRegisterRowDraft[]>([]);
@@ -1057,6 +1066,14 @@ export default function SlaveDetailPage() {
   useEffect(() => {
     registerRowsRef.current = registerRows;
   }, [registerRows]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("inowio.registers.view", registerView);
+    } catch {
+      // best-effort persistence
+    }
+  }, [registerView]);
 
   useEffect(() => {
     setHasUnsavedChanges?.(hasPageUnsaved);
@@ -3192,9 +3209,35 @@ export default function SlaveDetailPage() {
 
       <div className="w-full rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900/60">
         <div className="flex flex-col gap-3">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <div className="text-sm font-semibold text-slate-900 dark:text-slate-200">Read / Write Registers</div>
+            </div>
+            <div className="inline-flex items-center self-start rounded-full border border-slate-300 bg-slate-100 p-0.5 sm:self-auto dark:border-slate-700 dark:bg-white/5">
+              <button
+                type="button"
+                onClick={() => setRegisterView("edit")}
+                aria-pressed={registerView === "edit"}
+                className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold transition ${registerView === "edit"
+                  ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-200"
+                  : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+                  }`}
+              >
+                <FiEdit3 className="h-3.5 w-3.5" aria-hidden="true" />
+                Edit
+              </button>
+              <button
+                type="button"
+                onClick={() => setRegisterView("monitor")}
+                aria-pressed={registerView === "monitor"}
+                className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold transition ${registerView === "monitor"
+                  ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-200"
+                  : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+                  }`}
+              >
+                <FiActivity className="h-3.5 w-3.5" aria-hidden="true" />
+                Monitor
+              </button>
             </div>
           </div>
 
@@ -3295,7 +3338,7 @@ export default function SlaveDetailPage() {
                 </button>
               )}
 
-              {[1, 2, 3, 4].includes(effectiveReadFunctionCode(selectedFunctionCode)) ? (
+              {registerView === "edit" && [1, 2, 3, 4].includes(effectiveReadFunctionCode(selectedFunctionCode)) ? (
                 <button
                   type="button"
                   className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-4 py-1.5 text-sm font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
@@ -3308,7 +3351,7 @@ export default function SlaveDetailPage() {
                 </button>
               ) : null}
 
-              {canWrite ? (
+              {registerView === "edit" && canWrite ? (
                 <button
                   type="button"
                   className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-4 py-1.5 text-sm font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60 sm:col-span-1 sm:w-auto dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
@@ -3320,18 +3363,20 @@ export default function SlaveDetailPage() {
                 </button>
               ) : null}
 
-              <button
-                type="button"
-                className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-4 py-1.5 text-sm font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
-                onClick={() => addRegisterRow()}
-                disabled={busyOrPolling}
-              >
-                <FiPlus className="h-4 w-4" aria-hidden="true" />
-                Add Row
-              </button>
+              {registerView === "edit" ? (
+                <button
+                  type="button"
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-4 py-1.5 text-sm font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
+                  onClick={() => addRegisterRow()}
+                  disabled={busyOrPolling}
+                >
+                  <FiPlus className="h-4 w-4" aria-hidden="true" />
+                  Add Row
+                </button>
+              ) : null}
             </div>
             <div className="flex flex-wrap items-center justify-end gap-4">
-              {canWrite ? (
+              {registerView === "edit" && canWrite ? (
                 <div className="flex items-center justify-end gap-2">
                   <span className="text-xs text-slate-600 dark:text-slate-300">Read after write</span>
                   <button
@@ -3353,7 +3398,7 @@ export default function SlaveDetailPage() {
                 </div>
               ) : null}
 
-              {(selectedFunctionCode === 3 || selectedFunctionCode === 6 || selectedFunctionCode === 16) && (
+              {registerView === "edit" && (selectedFunctionCode === 3 || selectedFunctionCode === 6 || selectedFunctionCode === 16) && (
                 <div className="flex items-center justify-end gap-2 sm:min-w-45">
                   <span className="text-xs text-slate-600 dark:text-slate-300">Mask write</span>
                   <button
@@ -3376,7 +3421,7 @@ export default function SlaveDetailPage() {
               )}
             </div>
           </div>
-          {maskWriteVisible && (selectedFunctionCode === 3 || selectedFunctionCode === 6 || selectedFunctionCode === 16) && (
+          {registerView === "edit" && maskWriteVisible && (selectedFunctionCode === 3 || selectedFunctionCode === 6 || selectedFunctionCode === 16) && (
             <div className="mt-2 rounded-xl border border-slate-200 bg-slate-50/70 p-3 dark:border-slate-800/80 dark:bg-slate-950/30">
               <div className="mb-2 text-xs font-semibold tracking-wide text-slate-700 dark:text-slate-300">
                 Mask Write Register (0x16)
@@ -3516,6 +3561,17 @@ export default function SlaveDetailPage() {
             </div>
           ) : null}
 
+          {registerView === "monitor" ? (
+            <RegisterMonitorView
+              rows={rowsForTable}
+              formatValue={formatValueForRow}
+              pinStorageKey={`inowio.monitor.pins.${workspace.name}.${slave?.id ?? "none"}.${selectedFunctionCode}`}
+              polling={pollingRows}
+              pollIntervalMs={Number.parseInt(pollIntervalMs, 10) || null}
+              summary={runtimeSummary}
+              onOpenDetails={(key) => setReadValueDetailsKey(key)}
+            />
+          ) : (
           <RegisterRowsTable
             rows={rowsForTable}
             functionCode={selectedFunctionCode}
@@ -3590,6 +3646,7 @@ export default function SlaveDetailPage() {
               setReadValueDetailsKey(key);
             }}
           />
+          )}
         </div>
       </div>
 

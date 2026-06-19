@@ -699,7 +699,7 @@ export default function WorkspaceScreen({ onOpen }: Props) {
                                       e.stopPropagation();
                                       openEditModal(ws);
                                     }}
-                                    className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-white/80 text-slate-500 transition hover:border-slate-400 hover:text-slate-700 dark:border-slate-700 dark:bg-slate-950/70 dark:text-slate-300 dark:hover:border-slate-500 dark:hover:text-slate-100"
+                                    className="inline-flex p-2 items-center justify-center rounded-full border border-slate-200 bg-white/80 text-slate-500 transition hover:border-slate-400 hover:text-slate-700 dark:border-slate-700 dark:bg-slate-950/70 dark:text-slate-300 dark:hover:border-slate-500 dark:hover:text-slate-100"
                                   >
                                     <FiEdit3 className="h-3.5 w-3.5" aria-hidden="true" />
                                   </button>
@@ -712,7 +712,7 @@ export default function WorkspaceScreen({ onOpen }: Props) {
                                       setDeleteError(null);
                                       setDeleteTarget(ws);
                                     }}
-                                    className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-white/80 text-slate-500 transition hover:border-rose-500/60 hover:text-rose-600 dark:border-slate-700 dark:bg-slate-950/70 dark:text-slate-300 dark:hover:border-rose-400/60 dark:hover:text-rose-300"
+                                    className="inline-flex items-center justify-center rounded-full p-2 border border-slate-200 bg-white/80 text-slate-500 transition hover:border-rose-500/60 hover:text-rose-600 dark:border-slate-700 dark:bg-slate-950/70 dark:text-slate-300 dark:hover:border-rose-400/60 dark:hover:text-rose-300"
                                   >
                                     <FiTrash2 className="h-3.5 w-3.5" aria-hidden="true" />
                                   </button>
