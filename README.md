@@ -23,7 +23,9 @@ Desktop toolkit for configuring, testing, and monitoring Modbus TCP/RTU devices.
 
 - Multi-protocol Modbus (TCP & RTU) with persistent workspace settings
 - Device registry with register mapping, bulk import/export, and diagnostics
+- Live register **Monitor** view with density, search, status filters, and pinned watch-lists for large maps
 - Real-time analyzer powered by ECharts plus traffic capture for debugging
+- Grid/list workspace browser that remembers your view, and per-slave register-type recall
 - Rich logging, dark/light theming, and keyboard-friendly UI
 - Ships as a native desktop app for Windows, macOS, and Linux
 - In-app auto-updater with a manual "Check for updates" button on the About page

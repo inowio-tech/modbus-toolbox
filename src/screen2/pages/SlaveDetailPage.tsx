@@ -24,6 +24,12 @@ import RegisterMonitorView from "../components/RegisterMonitorView";
 import SlaveAttachmentsCard from "../components/SlaveAttachmentsCard";
 import SlaveStatusBar from "../components/SlaveStatusBar";
 import {
+  readFunctionCode,
+  readRegisterView,
+  writeFunctionCode,
+  writeRegisterView,
+} from "../utils/registerPrefs";
+import {
   ConnectionSettings as GlobalConnectionSettings,
   ConnectionSettingsForm,
   PortItem as SerialPortItem,
@@ -831,25 +837,13 @@ export default function SlaveDetailPage() {
   const [disconnecting, setDisconnecting] = useState(false);
 
   const [addressBase, setAddressBase] = useState<10 | 16>(10);
-  const [registerView, setRegisterView] = useState<"edit" | "monitor">(() => {
-    try {
-      return window.localStorage.getItem(`inowio.registers.view.${workspace.name}`) === "monitor" ? "monitor" : "edit";
-    } catch {
-      return "edit";
-    }
-  });
+  const [registerView, setRegisterView] = useState<"edit" | "monitor">(() =>
+    readRegisterView(workspace.name),
+  );
 
-  const [selectedFunctionCode, setSelectedFunctionCode] = useState<number>(() => {
-    try {
-      const stored = Number.parseInt(
-        window.localStorage.getItem(`inowio.registers.functionCode.${workspace.name}.${slaveId}`) ?? "",
-        10,
-      );
-      return [1, 2, 3, 4, 5, 6, 15, 16].includes(stored) ? stored : 4;
-    } catch {
-      return 4;
-    }
-  });
+  const [selectedFunctionCode, setSelectedFunctionCode] = useState<number>(() =>
+    readFunctionCode(workspace.name, slaveId),
+  );
   const [registerRows, setRegisterRows] = useState<SlaveRegisterRowDraft[]>([]);
   const registerRowsRef = useRef<SlaveRegisterRowDraft[]>([]);
   const [loadingRows, setLoadingRows] = useState(false);
@@ -1078,22 +1072,11 @@ export default function SlaveDetailPage() {
   }, [registerRows]);
 
   useEffect(() => {
-    try {
-      window.localStorage.setItem(`inowio.registers.view.${workspace.name}`, registerView);
-    } catch {
-      // best-effort persistence
-    }
-  }, [registerView]);
+    writeRegisterView(workspace.name, registerView);
+  }, [registerView, workspace.name]);
 
   useEffect(() => {
-    try {
-      window.localStorage.setItem(
-        `inowio.registers.functionCode.${workspace.name}.${slaveId}`,
-        String(selectedFunctionCode),
-      );
-    } catch {
-      // best-effort persistence
-    }
+    writeFunctionCode(workspace.name, slaveId, selectedFunctionCode);
     // Intentionally keyed only on selectedFunctionCode: on slave navigation the
     // component is reused and slaveId changes without fc changing, so writing
     // here would persist the previous slave's fc into the new slave's key.
@@ -1106,16 +1089,7 @@ export default function SlaveDetailPage() {
   // re-read the stored function code whenever the active slave changes.
   useEffect(() => {
     if (!slave) return;
-    try {
-      const stored = Number.parseInt(
-        window.localStorage.getItem(`inowio.registers.functionCode.${workspace.name}.${slave.id}`) ?? "",
-        10,
-      );
-      setSelectedFunctionCode([1, 2, 3, 4, 5, 6, 15, 16].includes(stored) ? stored : 4);
-    } catch {
-      // best-effort
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    setSelectedFunctionCode(readFunctionCode(workspace.name, slave.id));
   }, [workspace.name, slave?.id]);
 
   useEffect(() => {

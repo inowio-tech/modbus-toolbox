@@ -7,14 +7,14 @@ const workspaceSection: HelpSectionDefinition = {
   title: "Workspace",
   description:
     "Understand why workspaces matter, how to search/filter them, create new ones, manage metadata, and handle logs/deletion safely.",
-  keywords: ["workspace", "search", "cards", "add", "rename", "export", "import", "logs", "delete", "example"],
+  keywords: ["workspace", "search", "cards", "grid", "list", "view", "add", "rename", "export", "import", "logs", "delete", "example"],
   searchText:
     "Workspaces are the top-level containers. Learn about the header context, search, cards, add dialog, rename, export, import, metadata form, save/delete, logs separation, deletion cautions, and practical multi-site examples.",
   anchors: [
     { id: "overview", label: "What is a workspace?" },
     { id: "header", label: "Header overview" },
     { id: "search", label: "Search & filtering" },
-    { id: "cards", label: "Workspace cards" },
+    { id: "cards", label: "Grid & list views" },
     { id: "create", label: "Add workspace dialog" },
     { id: "rename", label: "Renaming a workspace" },
     { id: "export", label: "Exporting a workspace" },
@@ -49,6 +49,9 @@ const workspaceSection: HelpSectionDefinition = {
           </li>
           <li>
             <strong>Search bar</strong> for instant filtering.</li>
+          <li>
+            <strong>Grid / List toggle</strong> to switch how workspaces are laid out.
+          </li>
         </ul>
         <p>It is intentionally minimal—switching contexts feels instant, even when juggling dozens of workspaces.</p>
       </SectionBlock>
@@ -60,14 +63,19 @@ const workspaceSection: HelpSectionDefinition = {
         </p>
         <p>Use it when handling many customer sites, multiple commissioning projects, or historical test benches.</p>
       </SectionBlock>
-      <SectionBlock section="workspace" anchor="cards" title="Workspace cards">
-        <p>Each workspace appears as a card so projects stay visually separated:</p>
+      <SectionBlock section="workspace" anchor="cards" title="Grid & list views">
+        <p>
+          Workspaces can be browsed two ways, switched with the <strong>Grid / List</strong> toggle in the header. Your choice is remembered between sessions.
+        </p>
         <ul className="list-disc space-y-1 pl-5">
-          <li><strong>Name</strong> and optional description.</li>
-          <li><strong>Created / updated</strong> timestamps to see activity.</li>
-          <li><strong>Quick actions</strong> like Open or Delete.</li>
+          <li>
+            <strong>Grid</strong> — spacious cards for quick visual scanning. Each card shows the name, optional description, created / updated timestamps, and quick actions (Open, Edit, Delete).
+          </li>
+          <li>
+            <strong>List</strong> — a compact table with the same columns, better when you manage many workspaces and want density.
+          </li>
         </ul>
-        <p>This layout reduces the risk of editing the wrong setup and keeps scanning faster than a dense table.</p>
+        <p>Both layouts surface the same information and actions—pick whichever keeps you fastest and reduces the risk of editing the wrong setup.</p>
       </SectionBlock>
       <SectionBlock section="workspace" anchor="create" title="Add workspace dialog">
         <p>The Add Workspace dialog is how new projects begin. It captures:</p>

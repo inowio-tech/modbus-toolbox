@@ -50,6 +50,7 @@ describe("WorkspaceScreen", () => {
     pushToastMock.mockReset();
     listAppLogsMock.mockResolvedValue([]);
     setAppVersion("test");
+    window.localStorage.clear();
   });
 
   function renderScreen(overrides?: { workspaces?: Workspace[] }) {
@@ -93,6 +94,28 @@ describe("WorkspaceScreen", () => {
 
     await waitFor(() => expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ name: "Alpha" })));
     expect(invokeMock).toHaveBeenCalledWith("touch_workspace", expect.objectContaining({ name: "Alpha" }));
+  });
+
+  it("remembers the grid/list view choice in localStorage", async () => {
+    renderScreen();
+    await screen.findByText("Alpha");
+
+    const listBtn = screen.getByRole("button", { name: "List view" });
+    expect(listBtn).toHaveAttribute("aria-pressed", "false");
+
+    fireEvent.click(listBtn);
+
+    expect(listBtn).toHaveAttribute("aria-pressed", "true");
+    expect(window.localStorage.getItem("inowio.workspace.view")).toBe("list");
+  });
+
+  it("restores the saved list view on mount", async () => {
+    window.localStorage.setItem("inowio.workspace.view", "list");
+    renderScreen();
+    await screen.findByText("Alpha");
+
+    expect(screen.getByRole("button", { name: "List view" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Grid view" })).toHaveAttribute("aria-pressed", "false");
   });
 
   it("shows errors when loading workspaces fails", async () => {

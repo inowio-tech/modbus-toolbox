@@ -130,6 +130,7 @@ export default function AboutPage() {
                   <li>Create reusable signals from registers.</li>
                   <li>Visualize data with value tiles and trend charts.</li>
                   <li>Poll devices at controlled intervals.</li>
+                  <li>Monitor live values with search, status filters, and pinned watch-lists.</li>
                   <li>View workspace and application logs.</li>
                   <li>Persist configuration for repeatable testing.</li>
                 </ul>
