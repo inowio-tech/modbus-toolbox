@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import RegisterMonitorView from "./RegisterMonitorView";
@@ -58,14 +58,14 @@ describe("RegisterMonitorView", () => {
     expect(screen.queryByText("VALVE")).toBeNull();
   });
 
-  it("pins a register into the watch list", () => {
+  it("pins a register and the Pinned filter shows only pins", () => {
     renderView(rows);
-    expect(screen.queryByText(/watch list/i)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /pin pump/i }));
-    // The watch section is the title's parent (title + strip only — not the cards).
-    const watch = screen.getByText(/watch list/i).parentElement as HTMLElement;
-    expect(within(watch).getByText("PUMP")).toBeInTheDocument();
-    // Pin button flips to unpin.
+    // Star flips to unpin.
     expect(screen.getByRole("button", { name: /unpin pump/i })).toBeInTheDocument();
+    // Pinned filter narrows the list to pinned registers only.
+    fireEvent.click(screen.getByRole("button", { name: /^pinned$/i }));
+    expect(screen.getByText("PUMP")).toBeInTheDocument();
+    expect(screen.queryByText("VALVE")).toBeNull();
   });
 });

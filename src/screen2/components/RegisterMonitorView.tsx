@@ -169,8 +169,6 @@ export default function RegisterMonitorView({
     [rows, formatValue, pins, flash],
   );
 
-  const pinnedRows = useMemo(() => displayRows.filter((r) => r.pinned), [displayRows]);
-
   const visibleRows = useMemo(() => {
     const q = query.trim().toLowerCase();
     return displayRows.filter((r) => {
@@ -273,48 +271,6 @@ export default function RegisterMonitorView({
           </div>
         </div>
       </div>
-
-      {/* pinned watch list */}
-      {pinnedRows.length > 0 ? (
-        <div>
-          <div className="mb-1.5 flex items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-wider text-slate-400 dark:text-slate-500">
-            <FiStar className="h-3 w-3" aria-hidden="true" /> Watch list · {pinnedRows.length}
-          </div>
-          <div className="flex gap-2 overflow-x-auto pb-1">
-            {pinnedRows.map((r) => (
-              <button
-                type="button"
-                key={`watch-${r.key}`}
-                onClick={() => onOpenDetails(r.key)}
-                className={`flex-none rounded-xl border bg-slate-50/70 px-3 py-2 text-left transition hover:border-emerald-500/40 dark:bg-slate-950/30 ${
-                  r.flashing
-                    ? "border-emerald-500/50"
-                    : "border-emerald-500/20 dark:border-emerald-500/20"
-                }`}
-                style={{ minWidth: "9.5rem" }}
-              >
-                <div className="flex items-center gap-1.5">
-                  <span className="truncate text-[11px] font-semibold text-slate-700 dark:text-slate-200">
-                    {r.alias || `@${r.address}`}
-                  </span>
-                </div>
-                <div
-                  className={`mt-0.5 font-mono text-xl tabular-nums ${
-                    r.status === "error" || r.status === "illegal"
-                      ? "text-amber-600 dark:text-amber-300"
-                      : "text-slate-900 dark:text-slate-100"
-                  }`}
-                >
-                  {r.valueLabel}
-                </div>
-                <div className="mt-1 flex items-center gap-1.5 font-mono text-[10px] text-slate-400 dark:text-slate-500">
-                  <span className={`h-1.5 w-1.5 rounded-full ${DOT_CLASS[r.status]}`} />@{r.address} · {r.age}
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
-      ) : null}
 
       {/* body */}
       {rows.length === 0 ? (
