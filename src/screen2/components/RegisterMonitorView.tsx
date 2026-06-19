@@ -2,22 +2,11 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { FiGrid, FiList, FiSearch, FiStar, FiX } from "react-icons/fi";
 import type { RegisterRowDraft } from "./RegisterRowsTable";
 
-export type RegisterMonitorSummary = {
-  ok: number;
-  illegal: number;
-  error: number;
-  idle: number;
-  ageLabel: string;
-};
-
 export type RegisterMonitorViewProps = {
   rows: RegisterRowDraft[];
   formatValue: (row: RegisterRowDraft) => string;
   /** Scopes the pinned watch-list to this slave + function code. */
   pinStorageKey: string;
-  polling: boolean;
-  pollIntervalMs: number | null;
-  summary: RegisterMonitorSummary;
   onOpenDetails: (key: string) => void;
 };
 
@@ -61,9 +50,6 @@ export default function RegisterMonitorView({
   rows,
   formatValue,
   pinStorageKey,
-  polling,
-  pollIntervalMs,
-  summary,
   onOpenDetails,
 }: RegisterMonitorViewProps) {
   const [query, setQuery] = useState("");
@@ -212,34 +198,6 @@ export default function RegisterMonitorView({
 
   return (
     <div className="flex flex-col gap-3">
-      {/* status bar */}
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 font-mono text-xs text-slate-500 dark:border-slate-800 dark:bg-slate-950/30 dark:text-slate-400">
-        {polling ? (
-          <span className="inline-flex items-center gap-2 text-emerald-700 dark:text-emerald-300">
-            <span className="relative flex h-2.5 w-2.5">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400/70" />
-              <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-400" />
-            </span>
-            Polling
-          </span>
-        ) : (
-          <span className="inline-flex items-center gap-2">
-            <span className="h-2.5 w-2.5 rounded-full bg-slate-500" />
-            Idle
-          </span>
-        )}
-        <span>
-          updated <span className="text-slate-700 dark:text-slate-200">{summary.ageLabel}</span>
-          {summary.ageLabel !== "—" ? " ago" : ""}
-        </span>
-        <span>
-          OK <span className="font-semibold text-emerald-700 dark:text-emerald-300">{summary.ok}</span> · Bad{" "}
-          <span className="font-semibold text-amber-600 dark:text-amber-300">{summary.illegal}</span> · Err{" "}
-          <span className="font-semibold text-rose-600 dark:text-rose-300">{summary.error}</span>
-        </span>
-        {pollIntervalMs != null ? <span className="ml-auto">interval {pollIntervalMs} ms</span> : null}
-      </div>
-
       {/* filters */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative min-w-45 flex-1 sm:max-w-xs">
@@ -369,7 +327,7 @@ export default function RegisterMonitorView({
         </div>
       ) : density === "rows" ? (
         <div className="overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-800">
-          <div className="max-h-[460px] overflow-auto">
+          <div className="max-h-115 overflow-auto">
             <table className="w-full min-w-160 table-fixed border-collapse text-left">
               <colgroup>
                 <col className="w-10" />

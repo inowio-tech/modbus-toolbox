@@ -3566,9 +3566,6 @@ export default function SlaveDetailPage() {
               rows={rowsForTable}
               formatValue={formatValueForRow}
               pinStorageKey={`inowio.monitor.pins.${workspace.name}.${slave?.id ?? "none"}.${selectedFunctionCode}`}
-              polling={pollingRows}
-              pollIntervalMs={Number.parseInt(pollIntervalMs, 10) || null}
-              summary={runtimeSummary}
               onOpenDetails={(key) => setReadValueDetailsKey(key)}
             />
           ) : (

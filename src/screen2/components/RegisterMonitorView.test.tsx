@@ -22,17 +22,12 @@ function makeRow(over: Partial<RegisterRowDraft> & { key: string }): RegisterRow
   };
 }
 
-const summary = { ok: 1, illegal: 0, error: 1, idle: 0, ageLabel: "1s" };
-
 function renderView(rows: RegisterRowDraft[]) {
   return render(
     <RegisterMonitorView
       rows={rows}
       formatValue={(r) => (r.runtimeValue == null ? "—" : String(r.runtimeValue))}
       pinStorageKey="test.pins"
-      polling
-      pollIntervalMs={1000}
-      summary={summary}
       onOpenDetails={vi.fn()}
     />,
   );
@@ -48,7 +43,7 @@ describe("RegisterMonitorView", () => {
     makeRow({ key: "k2", address: "2", alias: "VALVE", runtimeStatus: "error", runtimeError: "illegal addr" }),
   ];
 
-  it("renders live values and the OK/Err tally", () => {
+  it("renders live values for each register", () => {
     renderView(rows);
     expect(screen.getByText("PUMP")).toBeInTheDocument();
     expect(screen.getByText("42")).toBeInTheDocument();
