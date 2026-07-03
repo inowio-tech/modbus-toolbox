@@ -6,13 +6,12 @@ const T = [{ templateKey: "temp_humidity", name: "Temp/Humidity", category: "Sen
   registers: [{ offset: 0, bank: 4, dataType: "u16", byteOrder: "ABCD", valueSource: "device", sourceParams: "{}", alias: "Temperature" }] }];
 
 describe("AddDeviceModal", () => {
-  it("selects a template, configures it, and submits from the review step", () => {
+  it("selects a template, configures it, and submits directly from configure", () => {
     const onSubmit = vi.fn();
     render(<AddDeviceModal open templates={T} onClose={() => {}} onSubmit={onSubmit} />);
     fireEvent.click(screen.getByRole("button", { name: /temp\/humidity/i }));
     fireEvent.click(screen.getByRole("button", { name: /next/i }));
     fireEvent.change(screen.getByLabelText(/device name/i), { target: { value: "Sensor A" } });
-    fireEvent.click(screen.getByRole("button", { name: /next/i }));
     fireEvent.click(screen.getByRole("button", { name: /create/i }));
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ templateKey: "temp_humidity", deviceName: "Sensor A" }));
   });
@@ -23,13 +22,12 @@ describe("AddDeviceModal", () => {
 });
 
 describe("AddDeviceModal wizard", () => {
-  it("walks select → configure → review → create", () => {
+  it("walks select → configure → create", () => {
     const onSubmit = vi.fn();
     render(<AddDeviceModal open templates={T} onClose={vi.fn()} onSubmit={onSubmit} />);
     fireEvent.click(screen.getByText("Temp/Humidity"));           // select template
     fireEvent.click(screen.getByRole("button", { name: /next/i })); // → configure
     fireEvent.change(screen.getByLabelText(/base address/i), { target: { value: "40001" } });
-    fireEvent.click(screen.getByRole("button", { name: /next/i })); // → review
     fireEvent.click(screen.getByRole("button", { name: /create/i }));
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ templateKey: "temp_humidity", baseAddress: 40001 }));
   });
@@ -43,12 +41,12 @@ describe("AddDeviceModal wizard", () => {
     fireEvent.click(screen.getByRole("button", { name: /next/i }));
     expect((screen.getByLabelText(/device name/i) as HTMLInputElement).value).toBe("Temp/Humidity");
   });
-  it("blocks Next in configure when the name is cleared", () => {
+  it("blocks Create in configure when the name is cleared", () => {
     render(<AddDeviceModal open templates={T} onClose={vi.fn()} onSubmit={vi.fn()} />);
     fireEvent.click(screen.getByText("Temp/Humidity"));
     fireEvent.click(screen.getByRole("button", { name: /next/i }));
     fireEvent.change(screen.getByLabelText(/device name/i), { target: { value: "" } });
-    expect(screen.getByRole("button", { name: /next/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /create/i })).toBeDisabled();
     expect(screen.getByText(/device name is required/i)).toBeInTheDocument();
   });
 });

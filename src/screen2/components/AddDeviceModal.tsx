@@ -21,8 +21,9 @@ export type DeviceTemplate = {
 
 const BANK_LABEL: Record<number, string> = { 1: "coil", 2: "discrete", 3: "holding", 4: "input" };
 
-const MULTI_WORD_TYPES = new Set(["u32", "i32", "f32"]);
-const wordSpan = (dataType: string) => (MULTI_WORD_TYPES.has(dataType) ? 2 : 1);
+const FOUR_WORD_TYPES = new Set(["u64", "i64", "f64"]);
+const TWO_WORD_TYPES = new Set(["u32", "i32", "f32"]);
+const wordSpan = (dataType: string) => (FOUR_WORD_TYPES.has(dataType) ? 4 : TWO_WORD_TYPES.has(dataType) ? 2 : 1);
 
 export type ExistingRegister = { unitId: number; functionCode: number; address: number; dataType: string };
 
@@ -33,9 +34,9 @@ export type AddDeviceSubmit = {
   baseAddress: number;
 };
 
-type Step = "select" | "configure" | "review";
-const STEPS: Step[] = ["select", "configure", "review"];
-const STEP_LABEL: Record<Step, string> = { select: "Select template", configure: "Configure", review: "Review" };
+type Step = "select" | "configure";
+const STEPS: Step[] = ["select", "configure"];
+const STEP_LABEL: Record<Step, string> = { select: "Select template", configure: "Configure" };
 
 export default function AddDeviceModal(props: {
   open: boolean;
@@ -313,21 +314,6 @@ export default function AddDeviceModal(props: {
           </div>
         )}
 
-        {step === "review" && selected && (
-          <div className="space-y-3 text-sm">
-            <div className="font-semibold">{selected.icon} {selected.name}</div>
-            <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs sm:grid-cols-3">
-              <dt className="text-slate-500 dark:text-slate-400">Device name</dt>
-              <dd className="col-span-1 sm:col-span-2">{deviceName || "—"}</dd>
-              <dt className="text-slate-500 dark:text-slate-400">Unit ID</dt>
-              <dd className="col-span-1 sm:col-span-2">{unitId}</dd>
-              <dt className="text-slate-500 dark:text-slate-400">Base address</dt>
-              <dd className="col-span-1 sm:col-span-2">{baseAddress}</dd>
-              <dt className="text-slate-500 dark:text-slate-400">Registers</dt>
-              <dd className="col-span-1 sm:col-span-2">{selected.registers.length}</dd>
-            </dl>
-          </div>
-        )}
         </div>
 
         <div className="mt-4 flex shrink-0 items-center justify-between border-t border-slate-200 pt-4 dark:border-slate-800">
@@ -336,7 +322,7 @@ export default function AddDeviceModal(props: {
           </div>
           <div className="flex justify-end gap-2">
             {step !== "select" && (
-              <button type="button" onClick={() => setStep(step === "review" ? "configure" : "select")}
+              <button type="button" onClick={() => setStep("select")}
                 className="rounded-full border border-slate-300 bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100">
                 Back
               </button>
@@ -352,13 +338,7 @@ export default function AddDeviceModal(props: {
               </button>
             )}
             {step === "configure" && (
-              <button type="button" disabled={!configValid || hasCollision} onClick={() => setStep("review")}
-                className="rounded-full border border-emerald-600/60 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-800 disabled:opacity-50 dark:border-emerald-500/60 dark:text-emerald-200">
-                Next
-              </button>
-            )}
-            {step === "review" && (
-              <button type="button" disabled={hasCollision} onClick={handleSubmit}
+              <button type="button" disabled={!configValid || hasCollision} onClick={handleSubmit}
                 className="rounded-full border border-emerald-600/60 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-800 disabled:opacity-50 dark:border-emerald-500/60 dark:text-emerald-200">
                 Create
               </button>

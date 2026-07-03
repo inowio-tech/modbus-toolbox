@@ -4,8 +4,8 @@ import { rwLabel, type PageRegister } from "./simFilters";
 import type { SimDevice } from "./useSimulatorData";
 
 const DEVICE_PRESETS = ["temperature", "humidity", "pressure", "flow", "vibration", "analog", "discrete", "counter"];
-const GENERATOR_KINDS = ["sine", "ramp", "random", "toggle"];
-const MULTI_WORD_TYPES = ["u32", "i32", "f32"];
+const GENERATOR_KINDS = ["sine", "ramp", "decrement", "step", "random", "toggle"];
+const MULTI_WORD_TYPES = ["u32", "i32", "f32", "u64", "i64", "f64"];
 const BYTE_ORDERS = ["ABCD", "BADC", "CDAB", "DCBA"];
 const DISPLAY_FORMATS = ["raw", "dec0", "dec1", "dec2", "hex"];
 
@@ -21,6 +21,9 @@ type SourceParams = {
   connectionKind?: string;
   functionCode?: number;
   address?: number;
+  scale?: number;
+  offset?: number;
+  srcByteOrder?: string;
 };
 
 function parseSourceParams(raw: string | undefined): SourceParams {
@@ -93,6 +96,9 @@ export default function RegisterInspector(props: RegisterInspectorProps) {
   const [sourceConnectionKind, setSourceConnectionKind] = useState("tcp");
   const [sourceFunctionCode, setSourceFunctionCode] = useState(3);
   const [sourceAddress, setSourceAddress] = useState(1);
+  const [sourceScale, setSourceScale] = useState(1);
+  const [sourceOffset, setSourceOffset] = useState(0);
+  const [sourceByteOrder, setSourceByteOrder] = useState("");
 
   useEffect(() => {
     if (!register) {
@@ -111,6 +117,10 @@ export default function RegisterInspector(props: RegisterInspectorProps) {
     setSourceConnectionKind(params.connectionKind ?? "tcp");
     setSourceFunctionCode(params.functionCode ?? 3);
     setSourceAddress(params.address ?? 1);
+    setSourceScale(params.scale ?? 1);
+    setSourceOffset(params.offset ?? 0);
+    // Empty string ⇒ "same as this register's byte order" (verbatim mirror).
+    setSourceByteOrder(params.srcByteOrder ?? "");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [register?.id]);
 
@@ -125,7 +135,11 @@ export default function RegisterInspector(props: RegisterInspectorProps) {
   // carry ABCD byte order.
   const isBit = reg.functionCode === 1 || reg.functionCode === 2;
   const isMultiWord = MULTI_WORD_TYPES.includes(reg.dataType);
-  const dataTypeOptions = isBit ? ["bool"] : reg.valueSource === "hold" ? ["u16", "i16"] : ["u16", "i16", "u32", "i32", "f32"];
+  const dataTypeOptions = isBit
+    ? ["bool"]
+    : reg.valueSource === "hold"
+      ? ["u16", "i16"]
+      : ["u16", "i16", "u32", "i32", "f32", "u64", "i64", "f64"];
   const setDataType = (dataType: string) => {
     const patch: Partial<PageRegister> = { dataType };
     if (!MULTI_WORD_TYPES.includes(dataType)) patch.byteOrder = "ABCD";
@@ -149,7 +163,17 @@ export default function RegisterInspector(props: RegisterInspectorProps) {
         : reg.valueSource === "device"
         ? { preset, min, max, periodMs }
         : reg.valueSource === "route"
-        ? { slaveUnitId: sourceUnitId, connectionKind: sourceConnectionKind, functionCode: sourceFunctionCode, address: sourceAddress }
+        ? {
+            slaveUnitId: sourceUnitId,
+            connectionKind: sourceConnectionKind,
+            functionCode: sourceFunctionCode,
+            address: sourceAddress,
+            scale: sourceScale,
+            offset: sourceOffset,
+            // Only persist a source order when it differs from ABCD/blank so the
+            // backend keeps its verbatim fast path by default.
+            ...(sourceByteOrder ? { srcByteOrder: sourceByteOrder } : {}),
+          }
         : {}
     );
     onSave({ ...reg, sourceParams });
@@ -338,6 +362,49 @@ export default function RegisterInspector(props: RegisterInspectorProps) {
                     className={INPUT_CLASS}
                   />
                 </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <label className={LABEL_CLASS}>
+                    Scale
+                    <input
+                      aria-label="Scale"
+                      type="number"
+                      step="any"
+                      value={sourceScale}
+                      onChange={(e) => setSourceScale(Number(e.target.value))}
+                      className={INPUT_CLASS}
+                    />
+                  </label>
+                  <label className={LABEL_CLASS}>
+                    Offset
+                    <input
+                      aria-label="Offset"
+                      type="number"
+                      step="any"
+                      value={sourceOffset}
+                      onChange={(e) => setSourceOffset(Number(e.target.value))}
+                      className={INPUT_CLASS}
+                    />
+                  </label>
+                </div>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  Exposed value = source × scale + offset (e.g. scale 0.1, offset −40 turns a raw 700 into 30).
+                </p>
+                {isMultiWord ? (
+                  <label className={LABEL_CLASS}>
+                    Source byte order
+                    <select
+                      aria-label="Source byte order"
+                      value={sourceByteOrder}
+                      onChange={(e) => setSourceByteOrder(e.target.value)}
+                      className={INPUT_CLASS}
+                    >
+                      <option value="">Same as this register ({reg.byteOrder})</option>
+                      {BYTE_ORDERS.map((b) => (
+                        <option key={b} value={b}>{b}</option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
               </>
             )}
 

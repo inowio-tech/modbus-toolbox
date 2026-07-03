@@ -33,7 +33,14 @@ type ActionRow = {
   offset: number;
   min: number;
   max: number;
+  delayMs: number;
+  dataType: string;
+  byteOrder: string;
 };
+
+const ACTION_TYPES = ["u16", "i16", "u32", "i32", "f32", "u64", "i64", "f64"];
+const BYTE_ORDERS = ["ABCD", "BADC", "CDAB", "DCBA"];
+const MULTI_WORD = new Set(["u32", "i32", "f32", "u64", "i64", "f64"]);
 
 const EMPTY_RULE: SimRule = {
   id: 0,
@@ -68,6 +75,9 @@ const DEFAULT_ACTION: ActionRow = {
   offset: 0,
   min: 0,
   max: 100,
+  delayMs: 0,
+  dataType: "u16",
+  byteOrder: "ABCD",
 };
 
 const BANKS = [
@@ -120,6 +130,9 @@ function parseActions(raw: string | undefined): ActionRow[] {
       offset: a.offset ?? DEFAULT_ACTION.offset,
       min: a.min ?? DEFAULT_ACTION.min,
       max: a.max ?? DEFAULT_ACTION.max,
+      delayMs: a.delayMs ?? DEFAULT_ACTION.delayMs,
+      dataType: a.dataType ?? DEFAULT_ACTION.dataType,
+      byteOrder: a.byteOrder ?? DEFAULT_ACTION.byteOrder,
     }));
   } catch {
     return [];
@@ -136,8 +149,20 @@ function buildTriggerJson(t: TriggerForm): string {
   return JSON.stringify({ type: "onWrite", unit: t.unit, bank: t.bank, address: t.address });
 }
 
+// Multi-word width applies to word banks (holding/input) for value-producing
+// actions; toggle and bit banks are always single-word.
+function typeApplies(a: ActionRow): boolean {
+  return a.type !== "toggle" && (a.bank === 3 || a.bank === 4);
+}
+
 function buildActionJson(a: ActionRow): Record<string, unknown> {
-  const base = { type: a.type, unit: a.unit, bank: a.bank, address: a.address };
+  const base: Record<string, unknown> = { type: a.type, unit: a.unit, bank: a.bank, address: a.address };
+  // Only persist a delay/width when non-default, keeping stored JSON minimal.
+  if (a.delayMs > 0) base.delayMs = a.delayMs;
+  if (typeApplies(a) && a.dataType !== "u16") {
+    base.dataType = a.dataType;
+    if (MULTI_WORD.has(a.dataType)) base.byteOrder = a.byteOrder;
+  }
   switch (a.type) {
     case "set":
       return { ...base, value: a.value };
@@ -530,6 +555,50 @@ export default function SimRuleModal(props: {
                       />
                     </label>
                   </>
+                )}
+
+                <label className="flex flex-col gap-1">
+                  Delay (ms)
+                  <input
+                    aria-label={`Action delay ${idx}`}
+                    type="number"
+                    min={0}
+                    value={action.delayMs}
+                    onChange={(e) => updateAction(idx, { delayMs: Math.max(0, Number(e.target.value)) })}
+                    className={inputCls}
+                  />
+                </label>
+
+                {typeApplies(action) && (
+                  <label className="flex flex-col gap-1">
+                    Target type
+                    <select
+                      aria-label={`Action data type ${idx}`}
+                      value={action.dataType}
+                      onChange={(e) => updateAction(idx, { dataType: e.target.value })}
+                      className={inputCls}
+                    >
+                      {ACTION_TYPES.map((t) => (
+                        <option key={t} value={t}>{t}</option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+
+                {typeApplies(action) && MULTI_WORD.has(action.dataType) && (
+                  <label className="flex flex-col gap-1">
+                    Byte order
+                    <select
+                      aria-label={`Action byte order ${idx}`}
+                      value={action.byteOrder}
+                      onChange={(e) => updateAction(idx, { byteOrder: e.target.value })}
+                      className={inputCls}
+                    >
+                      {BYTE_ORDERS.map((b) => (
+                        <option key={b} value={b}>{b}</option>
+                      ))}
+                    </select>
+                  </label>
                 )}
 
                 <button

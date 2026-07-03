@@ -26,9 +26,10 @@ use tokio_modbus::prelude::*;
 use tokio_modbus::server::tcp::{accept_tcp_connection, Server};
 use tokio_modbus::server::Service;
 
-/// Number of 16-bit words a data type occupies. (Plan 2: 1- and 2-word types.)
+/// Number of 16-bit words a data type occupies (1-, 2- and 4-word types).
 pub fn word_count(data_type: &str) -> usize {
     match data_type {
+        "u64" | "i64" | "f64" => 4,
         "u32" | "i32" | "f32" => 2,
         _ => 1, // bool/u16/i16
     }
@@ -38,7 +39,9 @@ fn swap_bytes_word(w: u16) -> u16 {
     (w << 8) | (w >> 8)
 }
 
-/// Big-endian bytes of the value for the given type (Plan 2 supported types only).
+/// Big-endian bytes of the value for the given type. Integer casts saturate
+/// (Rust float→int semantics); precision beyond 2^53 is lossy for u64/i64 —
+/// acceptable for simulated values.
 fn value_to_be_bytes(data_type: &str, value: f64) -> Result<Vec<u8>, String> {
     match data_type {
         "u16" => Ok(((value as i64) as u16).to_be_bytes().to_vec()),
@@ -46,41 +49,101 @@ fn value_to_be_bytes(data_type: &str, value: f64) -> Result<Vec<u8>, String> {
         "u32" => Ok(((value as i64) as u32).to_be_bytes().to_vec()),
         "i32" => Ok(((value as i64) as i32).to_be_bytes().to_vec()),
         "f32" => Ok((value as f32).to_be_bytes().to_vec()),
-        other => Err(format!("unsupported simulator data type '{other}' (Plan 2: u16/i16/u32/i32/f32)")),
+        "u64" => Ok((value as u64).to_be_bytes().to_vec()),
+        "i64" => Ok((value as i64).to_be_bytes().to_vec()),
+        "f64" => Ok(value.to_be_bytes().to_vec()),
+        other => Err(format!("unsupported simulator data type '{other}'")),
     }
 }
 
-/// Encode a numeric value into Modbus words in address order, honoring byte order.
-/// Canonical = big-endian bytes; then byte-swap (BADC/DCBA), then word-swap (CDAB/DCBA).
-/// Mirrors `src/screen2/utils/modbusValueCodec.ts`.
+/// The byte-order tokens understood by the codec; anything else falls back to
+/// `ABCD`. Mirrors `KNOWN_ORDERS` in `src/screen2/utils/modbusValueCodec.ts`.
+fn normalize_order(order: &str) -> String {
+    let o = order.trim().to_uppercase();
+    const KNOWN: [&str; 8] = [
+        "ABCD", "BADC", "CDAB", "DCBA",
+        "HALF_SWAP", "HALF_SWAP_BS", "INTRA_HALF_SWAP", "INTRA_HALF_SWAP_BS",
+    ];
+    if o.is_empty() || !KNOWN.contains(&o.as_str()) { "ABCD".to_string() } else { o }
+}
+
+fn is_byte_swap_order(o: &str) -> bool {
+    matches!(o, "BADC" | "DCBA" | "HALF_SWAP_BS" | "INTRA_HALF_SWAP_BS")
+}
+
+/// Reorder words for the given (normalized) byte order. 1-word types are a
+/// no-op for every order (forgiving, like the frontend codec). Mirrors
+/// `applyOrderWords` in `modbusValueCodec.ts`.
+fn apply_order_words(words: &[u16], order: &str) -> Vec<u16> {
+    match words.len() {
+        2 => match order {
+            "CDAB" | "DCBA" => vec![words[1], words[0]],
+            _ => vec![words[0], words[1]],
+        },
+        4 => match order {
+            "CDAB" | "DCBA" => vec![words[3], words[2], words[1], words[0]],
+            "HALF_SWAP" | "HALF_SWAP_BS" => vec![words[2], words[3], words[0], words[1]],
+            "INTRA_HALF_SWAP" | "INTRA_HALF_SWAP_BS" => vec![words[1], words[0], words[3], words[2]],
+            _ => vec![words[0], words[1], words[2], words[3]],
+        },
+        _ => words.to_vec(),
+    }
+}
+
+/// Encode a numeric value into Modbus words in address order, honoring byte
+/// order. Canonical = big-endian words; byte-swap first (BADC/DCBA/*_BS), then
+/// word-reorder. Mirrors `encodeWriteWordsInAddressOrder` in
+/// `src/screen2/utils/modbusValueCodec.ts`, including 4-word types and the
+/// HALF_SWAP orders. Only an unknown data type errors; an order that doesn't
+/// apply to the type's width is a silent no-op (matches the frontend).
 pub fn encode_value(data_type: &str, byte_order: &str, value: f64) -> Result<Vec<u16>, String> {
     let bytes = value_to_be_bytes(data_type, value)?;
-    // pack big-endian bytes into words
-    let mut words: Vec<u16> = bytes
+    let words: Vec<u16> = bytes
         .chunks(2)
         .map(|c| ((c[0] as u16) << 8) | (c[1] as u16))
         .collect();
+    let order = normalize_order(byte_order);
+    let ordered: Vec<u16> = if is_byte_swap_order(&order) {
+        words.iter().map(|w| swap_bytes_word(*w)).collect()
+    } else {
+        words
+    };
+    Ok(apply_order_words(&ordered, &order))
+}
 
-    let order = byte_order.trim().to_uppercase();
-    let byte_swap = matches!(order.as_str(), "BADC" | "DCBA");
-    let word_swap = matches!(order.as_str(), "CDAB" | "DCBA");
-
-    // validate order against word count
-    match order.as_str() {
-        "ABCD" | "BADC" => {}
-        "CDAB" | "DCBA" if words.len() == 2 => {}
-        _ => return Err(format!("byte order '{order}' invalid for {}-word type '{data_type}'", words.len())),
+/// Decode Modbus words (in address order) back into a numeric value, the
+/// inverse of `encode_value`. Used by route-from-slave to apply scale/offset to
+/// a source value before re-encoding in the sim register's own order. Mirrors
+/// `decodeWordsInAddressOrder` in `modbusValueCodec.ts`.
+pub fn decode_value(data_type: &str, byte_order: &str, words: &[u16]) -> Option<f64> {
+    let wc = word_count(data_type);
+    if words.len() < wc { return None; }
+    let words = &words[..wc];
+    let order = normalize_order(byte_order);
+    // Inverse of encode: undo word-reorder, then undo the byte-swap.
+    let unordered = apply_order_words(words, &order);
+    let canonical: Vec<u16> = if is_byte_swap_order(&order) {
+        unordered.iter().map(|w| swap_bytes_word(*w)).collect()
+    } else {
+        unordered
+    };
+    let mut bytes = Vec::with_capacity(canonical.len() * 2);
+    for w in &canonical {
+        bytes.push((w >> 8) as u8);
+        bytes.push((w & 0xff) as u8);
     }
-
-    if byte_swap {
-        for w in words.iter_mut() {
-            *w = swap_bytes_word(*w);
-        }
-    }
-    if word_swap && words.len() == 2 {
-        words.swap(0, 1);
-    }
-    Ok(words)
+    let val = match data_type {
+        "u16" => u16::from_be_bytes([bytes[0], bytes[1]]) as f64,
+        "i16" => i16::from_be_bytes([bytes[0], bytes[1]]) as f64,
+        "u32" => u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f64,
+        "i32" => i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f64,
+        "f32" => f32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f64,
+        "u64" => u64::from_be_bytes(bytes[..8].try_into().ok()?) as f64,
+        "i64" => i64::from_be_bytes(bytes[..8].try_into().ok()?) as f64,
+        "f64" => f64::from_be_bytes(bytes[..8].try_into().ok()?),
+        _ => return None,
+    };
+    Some(val)
 }
 
 use std::f64::consts::PI;
@@ -112,6 +175,18 @@ pub fn generator_value(kind: &str, p: &GenParams, elapsed_ms: f64, seed: u64) ->
         "ramp" => {
             let frac = (elapsed_ms % period) / period;
             p.min + span * frac
+        }
+        // Continuous sawtooth downward: max → min each period (the mirror of ramp).
+        "decrement" => {
+            let frac = (elapsed_ms % period) / period;
+            p.max - span * frac
+        }
+        // Integer staircase: +1 whole unit per period, wrapping across the band
+        // (min, min+1, …, max, min, …). Advances in discrete steps rather than
+        // ramp's continuous slope.
+        "step" => {
+            let steps = span.max(1.0);
+            p.min + ((elapsed_ms / period).floor() % (steps + 1.0))
         }
         "random" => p.min + span * unit_random(seed),
         "toggle" => {
@@ -166,6 +241,31 @@ pub fn preset_value(preset: &str, p: &PresetParams, elapsed_ms: f64, seed: u64) 
     }
 }
 
+/// Transform raw source words read from a routed slave into the words this
+/// register exposes. Fast path (identity scale/offset AND matching byte order)
+/// mirrors the source verbatim. Otherwise: decode the source words with
+/// `src_byte_order`, apply `value * scale + offset`, and re-encode with the
+/// register's own `data_type`/`byte_order`. Any decode/encode failure falls
+/// back to the raw words so the register never goes dark.
+pub fn transform_route_words(
+    d: &DynReg,
+    words: &[u16],
+    scale: f64,
+    offset: f64,
+    src_byte_order: &str,
+) -> Vec<u16> {
+    let identity = scale == 1.0 && offset == 0.0
+        && src_byte_order.trim().eq_ignore_ascii_case(d.byte_order.trim());
+    if identity {
+        return words.to_vec();
+    }
+    match decode_value(&d.data_type, src_byte_order, words) {
+        Some(v) => encode_value(&d.data_type, &d.byte_order, v * scale + offset)
+            .unwrap_or_else(|_| words.to_vec()),
+        None => words.to_vec(),
+    }
+}
+
 /// Dynamic (device/generator) register resolved from a `SimRegister`'s
 /// `value_source` + `source_params`. `None` from `parse_dynamic` for hold
 /// registers (Plan 1 behavior) or unparseable params.
@@ -173,7 +273,21 @@ pub fn preset_value(preset: &str, p: &PresetParams, elapsed_ms: f64, seed: u64) 
 pub enum DynKind {
     Generator { kind: String, params: GenParams, seed: u64 },
     Preset { preset: String, params: PresetParams, seed: u64 },
-    Route { slave_unit: u8, connection_kind: String, src_fc: u8, src_addr: u16, count: u16 },
+    Route {
+        slave_unit: u8,
+        connection_kind: String,
+        src_fc: u8,
+        src_addr: u16,
+        count: u16,
+        /// Linear transform applied to the decoded source value before it is
+        /// re-encoded into this register: `exposed = source * scale + offset`.
+        scale: f64,
+        offset: f64,
+        /// Byte order the SOURCE value is decoded with. When it equals the
+        /// register's own `byte_order` and scale/offset are identity, the tick
+        /// takes a fast path and mirrors the raw words verbatim.
+        src_byte_order: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -216,6 +330,13 @@ pub fn parse_dynamic(reg: &SimRegister) -> Option<DynReg> {
             src_fc: v.get("functionCode").and_then(|x| x.as_u64()).unwrap_or(3) as u8,
             src_addr: v.get("address").and_then(|x| x.as_u64()).unwrap_or(0) as u16,
             count: word_count(&reg.data_type) as u16,
+            scale: json_f64(&v, "scale", 1.0),
+            offset: json_f64(&v, "offset", 0.0),
+            src_byte_order: v
+                .get("srcByteOrder")
+                .and_then(|x| x.as_str())
+                .unwrap_or(&reg.byte_order)
+                .to_string(),
         },
         _ => return None,
     };
@@ -627,6 +748,9 @@ impl SimEngine {
             let mut next_due: HashMap<(u8, u8, u16), f64> = HashMap::new();
             let mut last_emit = 0.0f64;
             let mut rule_states: HashMap<i64, RuleState> = HashMap::new();
+            // Actions whose rule fired but whose per-action delay hasn't elapsed
+            // yet: (due_ms, action, rng_seed). Drained each tick when due.
+            let mut pending_actions: Vec<(f64, TimedAction, u64)> = Vec::new();
             loop {
                 tokio::select! {
                     _ = &mut tick_rx => break,
@@ -651,7 +775,7 @@ impl SimEngine {
                                         updates.push((d.unit, d.bank, d.address, words));
                                     }
                                 }
-                                DynKind::Route { slave_unit, connection_kind, src_fc, src_addr, count } => {
+                                DynKind::Route { slave_unit, connection_kind, src_fc, src_addr, count, scale, offset, src_byte_order } => {
                                     let map = if connection_kind == "serial" { &rtu_sessions } else { &tcp_sessions };
                                     let session = map.lock().ok().and_then(|g| g.get(&workspace).cloned());
                                     // "missing" = no client session for this workspace (client not
@@ -662,7 +786,11 @@ impl SimEngine {
                                     let status = match session {
                                         None => "missing", // no session yet → keep last-good
                                         Some(sess) => match route_read_words(sess, *slave_unit, *src_fc, *src_addr, *count, 1000).await {
-                                            Ok(words) => { updates.push((d.unit, d.bank, d.address, words)); "ok" }
+                                            Ok(words) => {
+                                                let out = transform_route_words(d, &words, *scale, *offset, src_byte_order);
+                                                updates.push((d.unit, d.bank, d.address, out));
+                                                "ok"
+                                            }
                                             Err(_) => "stale", // read error/timeout → keep last-good
                                         },
                                     };
@@ -684,9 +812,24 @@ impl SimEngine {
                                 .lock()
                                 .map(|mut w| std::mem::take(&mut *w))
                                 .unwrap_or_default();
+                            // First apply any previously-scheduled delayed actions
+                            // that have come due, then evaluate rules for this tick.
+                            pending_actions.retain(|(due, ta, seed)| {
+                                if *due <= elapsed {
+                                    apply_timed_action(&mut guard, ta, *seed);
+                                    false
+                                } else {
+                                    true
+                                }
+                            });
                             let acts = eval_rules(&rules, &mut rule_states, &guard, elapsed, &drained);
-                            for (id, a) in acts {
-                                apply_action(&mut guard, &a, elapsed as u64 ^ id as u64);
+                            for (id, ta) in acts {
+                                let seed = elapsed as u64 ^ id as u64;
+                                if ta.delay_ms <= 0.0 {
+                                    apply_timed_action(&mut guard, &ta, seed);
+                                } else {
+                                    pending_actions.push((elapsed + ta.delay_ms, ta, seed));
+                                }
                             }
                         } // lock dropped before any await/emit
                         if elapsed - last_emit >= EMIT_INTERVAL_MS {
@@ -1518,13 +1661,26 @@ pub enum Action {
     Randomize { unit: u8, bank: u8, address: u16, min: i64, max: i64 },
 }
 
+/// An action plus its scheduling and target-width metadata. `delay_ms` (0 =
+/// immediate) staggers the action after its rule fires; `data_type`/`byte_order`
+/// let a `set`/`inc`/`dec`/`copy`/`randomize` write a MULTI-word register
+/// (u32/f32/u64/… ) correctly. Both default to today's behavior (fire now,
+/// single u16 word), so existing rules are unaffected.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TimedAction {
+    pub action: Action,
+    pub delay_ms: f64,
+    pub data_type: String,
+    pub byte_order: String,
+}
+
 /// A fully-parsed rule, ready for evaluation.
 #[derive(Debug, Clone)]
 pub struct RuleDef {
     pub id: i64,
     pub enabled: bool,
     pub trigger: Trigger,
-    pub actions: Vec<Action>,
+    pub actions: Vec<TimedAction>,
     pub sort_order: i64,
 }
 
@@ -1542,7 +1698,9 @@ fn json_i64(v: &serde_json::Value, key: &str, default: i64) -> i64 {
 
 /// Parse a single action from its JSON object; unknown `type` → `None` (the
 /// caller skips it, so one bad action doesn't invalidate the whole rule).
-fn parse_action(v: &serde_json::Value) -> Option<Action> {
+/// Reads optional `delayMs` (per-action delay) and `dataType`/`byteOrder`
+/// (multi-word target width), both defaulting to legacy single-word/immediate.
+fn parse_action(v: &serde_json::Value) -> Option<TimedAction> {
     let unit = json_u8(v, "unit", 1);
     let bank = json_u8(v, "bank", 1);
     let address = json_u16(v, "address", 0);
@@ -1570,7 +1728,12 @@ fn parse_action(v: &serde_json::Value) -> Option<Action> {
         },
         _ => return None,
     };
-    Some(action)
+    Some(TimedAction {
+        action,
+        delay_ms: v.get("delayMs").and_then(|x| x.as_f64()).unwrap_or(0.0).max(0.0),
+        data_type: v.get("dataType").and_then(|x| x.as_str()).unwrap_or("u16").to_string(),
+        byte_order: v.get("byteOrder").and_then(|x| x.as_str()).unwrap_or("ABCD").to_string(),
+    })
 }
 
 /// Parse a `SimRule`'s `trigger`/`actions` JSON into a `RuleDef`. Returns
@@ -1601,7 +1764,7 @@ pub fn parse_rule(rule: &SimRule) -> Option<RuleDef> {
         _ => return None,
     };
     let av: serde_json::Value = serde_json::from_str(&rule.actions).ok()?;
-    let actions: Vec<Action> = av
+    let actions: Vec<TimedAction> = av
         .as_array()
         .map(|arr| arr.iter().filter_map(parse_action).collect())
         .unwrap_or_default();
@@ -1665,6 +1828,68 @@ pub fn apply_action(banks: &mut HashMap<u8, SimBanks>, action: &Action, rng_seed
     }
 }
 
+/// The `(unit, bank, address)` an action writes to.
+fn action_target(action: &Action) -> (u8, u8, u16) {
+    match *action {
+        Action::Set { unit, bank, address, .. }
+        | Action::Inc { unit, bank, address, .. }
+        | Action::Dec { unit, bank, address, .. }
+        | Action::Toggle { unit, bank, address }
+        | Action::Copy { unit, bank, address, .. }
+        | Action::Randomize { unit, bank, address, .. } => (unit, bank, address),
+    }
+}
+
+/// Read a multi-word register from the banks as a number, decoding across its
+/// `word_count` addresses with `data_type`/`byte_order`. `None` if any word of
+/// the span is absent.
+fn read_typed(banks: &HashMap<u8, SimBanks>, unit: u8, bank: u8, addr: u16, data_type: &str, byte_order: &str) -> Option<f64> {
+    let wc = word_count(data_type);
+    let mut words = Vec::with_capacity(wc);
+    for i in 0..wc as u16 {
+        words.push(read_word(banks, unit, bank, addr.wrapping_add(i))?);
+    }
+    decode_value(data_type, byte_order, &words)
+}
+
+/// Apply a `TimedAction`'s effect. For single-word/bit targets (`data_type`
+/// resolving to 1 word — the default) this delegates to `apply_action`, keeping
+/// legacy behavior byte-for-byte. For multi-word targets it computes the numeric
+/// result, encodes it across the register's words with `data_type`/`byte_order`,
+/// and places them. `delay_ms` is handled by the caller (the tick scheduler),
+/// not here.
+pub fn apply_timed_action(banks: &mut HashMap<u8, SimBanks>, ta: &TimedAction, rng_seed: u64) {
+    if word_count(&ta.data_type) <= 1 {
+        apply_action(banks, &ta.action, rng_seed);
+        return;
+    }
+    let dt = &ta.data_type;
+    let bo = &ta.byte_order;
+    let (unit, bank, address) = action_target(&ta.action);
+    // Multi-word only applies to word banks (holding/input); bit banks are 1-word.
+    let result: f64 = match &ta.action {
+        Action::Set { value, .. } => *value as f64,
+        Action::Inc { by, .. } => read_typed(banks, unit, bank, address, dt, bo).unwrap_or(0.0) + *by as f64,
+        Action::Dec { by, .. } => read_typed(banks, unit, bank, address, dt, bo).unwrap_or(0.0) - *by as f64,
+        Action::Randomize { min, max, .. } => {
+            let span = (max - min + 1).max(1);
+            (min + (unit_random(rng_seed) * span as f64) as i64) as f64
+        }
+        Action::Copy { src_unit, src_bank, src_addr, scale, offset, .. } => {
+            match read_typed(banks, *src_unit, *src_bank, *src_addr, dt, bo) {
+                Some(s) => s * scale + offset,
+                None => return, // source absent → no-op (matches single-word Copy)
+            }
+        }
+        // Toggle has no meaningful multi-word semantics — fall back to the
+        // single-word toggle on the first word.
+        Action::Toggle { .. } => { apply_action(banks, &ta.action, rng_seed); return; }
+    };
+    if let Ok(words) = encode_value(dt, bo, result) {
+        place_words(banks, unit, bank, address, &words);
+    }
+}
+
 /// Per-rule runtime state carried across ticks, keyed by `RuleDef.id`.
 #[derive(Debug, Clone, Default)]
 pub struct RuleState {
@@ -1707,7 +1932,7 @@ pub fn eval_rules(
     banks: &HashMap<u8, SimBanks>,
     elapsed_ms: f64,
     writes: &[(u8, u8, u16)],
-) -> Vec<(i64, Action)> {
+) -> Vec<(i64, TimedAction)> {
     let mut out = Vec::new();
     for r in rules {
         let state = states.entry(r.id).or_default();
@@ -1886,9 +2111,12 @@ fn validate_register(reg: &SimRegister) -> Result<(), String> {
     if !(0..=65535).contains(&reg.address) {
         return Err(format!("address {} out of range (0-65535)", reg.address));
     }
-    if !matches!(reg.data_type.as_str(), "bool" | "u16" | "i16" | "u32" | "i32" | "f32") {
+    if !matches!(
+        reg.data_type.as_str(),
+        "bool" | "u16" | "i16" | "u32" | "i32" | "f32" | "u64" | "i64" | "f64"
+    ) {
         return Err(format!(
-            "unsupported data type '{}' (Plan 2: bool, u16, i16, u32, i32, f32)",
+            "unsupported data type '{}' (bool, u16, i16, u32, i32, f32, u64, i64, f64)",
             reg.data_type
         ));
     }
@@ -1909,12 +2137,19 @@ fn validate_register(reg: &SimRegister) -> Result<(), String> {
             "data type 'bool' is only valid for Hold registers; use u16 for coil/discrete generators".into(),
         );
     }
-    // byte order must be valid for the type's word count — same rule as encode_value.
+    // byte order must be applicable to the type's word count. Word/half swaps
+    // only mean something on multi-word types; the HALF_SWAP family is 4-word
+    // only (matches the frontend codec's supported orders per width).
     let order = reg.byte_order.trim().to_uppercase();
     let words = word_count(&reg.data_type);
-    let order_valid = match order.as_str() {
-        "ABCD" | "BADC" => true,
-        "CDAB" | "DCBA" => words == 2,
+    let order_valid = match words {
+        1 => matches!(order.as_str(), "ABCD" | "BADC"),
+        2 => matches!(order.as_str(), "ABCD" | "BADC" | "CDAB" | "DCBA"),
+        4 => matches!(
+            order.as_str(),
+            "ABCD" | "BADC" | "CDAB" | "DCBA"
+                | "HALF_SWAP" | "HALF_SWAP_BS" | "INTRA_HALF_SWAP" | "INTRA_HALF_SWAP_BS"
+        ),
         _ => false,
     };
     if !order_valid {
@@ -2507,8 +2742,11 @@ mod tests {
         m
     }
 
+    fn timed(action: Action) -> TimedAction {
+        TimedAction { action, delay_ms: 0.0, data_type: "u16".into(), byte_order: "ABCD".into() }
+    }
     fn rule(id: i64, trig: Trigger, acts: Vec<Action>) -> RuleDef {
-        RuleDef { id, enabled: true, trigger: trig, actions: acts, sort_order: id }
+        RuleDef { id, enabled: true, trigger: trig, actions: acts.into_iter().map(timed).collect(), sort_order: id }
     }
     #[test]
     fn interval_fires_each_period() {
@@ -2578,6 +2816,59 @@ mod tests {
     }
 
     #[test]
+    fn timed_action_sets_multi_word_register() {
+        // A `set` targeting an f32 holding register writes 2 words (ABCD).
+        let mut b = HashMap::new();
+        let one = TimedAction {
+            action: Action::Set { unit: 1, bank: 3, address: 10, value: 1 },
+            delay_ms: 0.0, data_type: "f32".into(), byte_order: "ABCD".into(),
+        };
+        apply_timed_action(&mut b, &one, 0);
+        // f32(1.0) = 0x3F80_0000 → words [0x3F80, 0x0000]
+        assert_eq!(read_word(&b, 1, 3, 10), Some(0x3F80));
+        assert_eq!(read_word(&b, 1, 3, 11), Some(0x0000));
+    }
+
+    #[test]
+    fn timed_action_inc_reads_and_writes_multi_word() {
+        // Seed an f32 register = 10.0, inc by 5 → 15.0.
+        let mut b = HashMap::new();
+        let seed = TimedAction { action: Action::Set { unit: 1, bank: 3, address: 0, value: 10 }, delay_ms: 0.0, data_type: "f32".into(), byte_order: "ABCD".into() };
+        apply_timed_action(&mut b, &seed, 0);
+        let inc = TimedAction { action: Action::Inc { unit: 1, bank: 3, address: 0, by: 5 }, ..seed.clone() };
+        apply_timed_action(&mut b, &inc, 0);
+        let got = read_typed(&b, 1, 3, 0, "f32", "ABCD").unwrap();
+        assert!((got - 15.0).abs() < 1e-6, "got {got}");
+    }
+
+    #[test]
+    fn single_word_timed_action_matches_legacy() {
+        // Default u16 timed action == apply_action (no multi-word path).
+        let mut a = banks1(&[(1, 3, 0, 10)]);
+        let mut b = banks1(&[(1, 3, 0, 10)]);
+        let ta = TimedAction { action: Action::Inc { unit: 1, bank: 3, address: 0, by: 8 }, delay_ms: 0.0, data_type: "u16".into(), byte_order: "ABCD".into() };
+        apply_timed_action(&mut a, &ta, 0);
+        apply_action(&mut b, &ta.action, 0);
+        assert_eq!(read_word(&a, 1, 3, 0), read_word(&b, 1, 3, 0));
+    }
+
+    #[test]
+    fn parse_action_reads_delay_and_type() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"type":"set","unit":1,"bank":3,"address":0,"value":5,"delayMs":500,"dataType":"u32","byteOrder":"CDAB"}"#,
+        ).unwrap();
+        let ta = parse_action(&v).unwrap();
+        assert_eq!(ta.delay_ms, 500.0);
+        assert_eq!(ta.data_type, "u32");
+        assert_eq!(ta.byte_order, "CDAB");
+        // Defaults when omitted.
+        let v2: serde_json::Value = serde_json::from_str(r#"{"type":"toggle","unit":1,"bank":1,"address":0}"#).unwrap();
+        let ta2 = parse_action(&v2).unwrap();
+        assert_eq!(ta2.delay_ms, 0.0);
+        assert_eq!(ta2.data_type, "u16");
+    }
+
+    #[test]
     fn builds_banks_grouped_by_unit_and_function() {
         let regs = vec![
             SimRegister { id: 1, unit_id: 1, function_code: 3, address: 257, alias: "".into(), data_type: "u16".into(), hold_value: 3, sort_order: 0, device_instance_id: None, value_source: "hold".into(), byte_order: "ABCD".into(), source_params: "{}".into(), interval_ms: 1000, unit: None, display_format: None },
@@ -2629,12 +2920,46 @@ mod tests {
         assert_eq!(word_count("i16"), 1);
         assert_eq!(word_count("f32"), 2);
         assert_eq!(word_count("u32"), 2);
+        assert_eq!(word_count("u64"), 4);
+        assert_eq!(word_count("i64"), 4);
+        assert_eq!(word_count("f64"), 4);
     }
 
     #[test]
-    fn encode_rejects_unsupported() {
-        assert!(encode_value("f64", "ABCD", 1.0).is_err());
-        assert!(encode_value("u16", "CDAB", 1.0).is_err()); // word-swap invalid for 1-word
+    fn encodes_four_word_types_all_orders() {
+        // u64 with distinct bytes so every reorder is observable. Value stays
+        // under 2^53 so it round-trips exactly through the f64 value channel.
+        let v = 0x0001_0203_0405_0607u64 as f64;
+        assert_eq!(encode_value("u64", "ABCD", v).unwrap(), vec![0x0001, 0x0203, 0x0405, 0x0607]);
+        assert_eq!(encode_value("u64", "CDAB", v).unwrap(), vec![0x0607, 0x0405, 0x0203, 0x0001]);
+        assert_eq!(encode_value("u64", "HALF_SWAP", v).unwrap(), vec![0x0405, 0x0607, 0x0001, 0x0203]);
+        assert_eq!(encode_value("u64", "INTRA_HALF_SWAP", v).unwrap(), vec![0x0203, 0x0001, 0x0607, 0x0405]);
+        assert_eq!(encode_value("u64", "BADC", v).unwrap(), vec![0x0100, 0x0302, 0x0504, 0x0706]);
+        // f64 1.0 = 0x3FF0000000000000
+        assert_eq!(encode_value("f64", "ABCD", 1.0).unwrap(), vec![0x3FF0, 0x0000, 0x0000, 0x0000]);
+    }
+
+    #[test]
+    fn encode_is_forgiving_but_rejects_unknown_type() {
+        // Unknown data type is the only hard error.
+        assert!(encode_value("u128", "ABCD", 1.0).is_err());
+        // A word-swap order on a 1-word type is a silent no-op (matches the
+        // frontend codec), not an error.
+        assert_eq!(encode_value("u16", "CDAB", 300.0).unwrap(), vec![0x012C]);
+    }
+
+    #[test]
+    fn decode_round_trips_every_type_and_order() {
+        for dt in ["u16", "i16", "u32", "i32", "f32", "u64", "i64", "f64"] {
+            for order in ["ABCD", "BADC", "CDAB", "DCBA", "HALF_SWAP", "INTRA_HALF_SWAP"] {
+                let v = 42.0;
+                let words = encode_value(dt, order, v).unwrap();
+                let back = decode_value(dt, order, &words).unwrap();
+                assert!((back - v).abs() < 1e-6, "round-trip failed for {dt}/{order}: {back}");
+            }
+        }
+        // Too few words → None.
+        assert!(decode_value("u32", "ABCD", &[0x1234]).is_none());
     }
 
     #[test]
@@ -2656,6 +2981,29 @@ mod tests {
         assert!((generator_value("ramp", &p, 0.0, 0) - 0.0).abs() < 1e-6);
         assert!((generator_value("ramp", &p, 500.0, 0) - 5.0).abs() < 1e-6);
         assert!(generator_value("ramp", &p, 1000.0, 0) < 1e-6); // wraps to 0
+    }
+
+    #[test]
+    fn decrement_is_reverse_sawtooth() {
+        let p = GenParams { min: 0.0, max: 10.0, period_ms: 1000.0 };
+        assert!((generator_value("decrement", &p, 0.0, 0) - 10.0).abs() < 1e-6); // starts at max
+        assert!((generator_value("decrement", &p, 500.0, 0) - 5.0).abs() < 1e-6); // half → midpoint
+        // approaches min at the end of the period
+        assert!(generator_value("decrement", &p, 999.0, 0) < 0.5);
+        for t in [0.0, 250.0, 750.0, 1500.0] {
+            let v = generator_value("decrement", &p, t, 0);
+            assert!(v >= 0.0 && v <= 10.0);
+        }
+    }
+
+    #[test]
+    fn step_is_integer_staircase() {
+        let p = GenParams { min: 0.0, max: 3.0, period_ms: 1000.0 };
+        assert_eq!(generator_value("step", &p, 0.0, 0), 0.0);
+        assert_eq!(generator_value("step", &p, 1000.0, 0), 1.0);
+        assert_eq!(generator_value("step", &p, 2500.0, 0), 2.0);
+        assert_eq!(generator_value("step", &p, 3000.0, 0), 3.0); // reaches max
+        assert_eq!(generator_value("step", &p, 4000.0, 0), 0.0); // wraps back to min
     }
 
     #[test]
@@ -2762,16 +3110,54 @@ mod tests {
         };
         let d = parse_dynamic(&reg).unwrap();
         match d.kind {
-            DynKind::Route { slave_unit, connection_kind, src_fc, src_addr, count } => {
+            DynKind::Route { slave_unit, connection_kind, src_fc, src_addr, count, scale, offset, src_byte_order } => {
                 assert_eq!(slave_unit, 7);
                 assert_eq!(connection_kind, "tcp");
                 assert_eq!(src_fc, 4);
                 assert_eq!(src_addr, 1);
                 assert_eq!(count, 2); // f32 → 2 words
+                assert_eq!(scale, 1.0); // defaults
+                assert_eq!(offset, 0.0);
+                assert_eq!(src_byte_order, "ABCD"); // defaults to the register's own order
             }
             _ => panic!("expected Route"),
         }
         assert!(validate_register(&reg).is_ok());
+    }
+
+    #[test]
+    fn parses_route_scale_offset_and_source_order() {
+        let reg = SimRegister {
+            id: 1, unit_id: 2, function_code: 3, address: 100, alias: "".into(), data_type: "u16".into(),
+            hold_value: 0, value_source: "route".into(), byte_order: "ABCD".into(),
+            source_params: "{\"slaveUnitId\":7,\"functionCode\":3,\"address\":1,\"scale\":0.1,\"offset\":-40,\"srcByteOrder\":\"BADC\"}".into(),
+            interval_ms: 500, sort_order: 0, device_instance_id: None,
+            unit: None, display_format: None,
+        };
+        match parse_dynamic(&reg).unwrap().kind {
+            DynKind::Route { scale, offset, src_byte_order, .. } => {
+                assert_eq!(scale, 0.1);
+                assert_eq!(offset, -40.0);
+                assert_eq!(src_byte_order, "BADC");
+            }
+            _ => panic!("expected Route"),
+        }
+    }
+
+    #[test]
+    fn transform_route_words_scales_and_reencodes() {
+        // u16 register, identity order, scale 0.1 offset -40: source 700 → 30.
+        let d = DynReg {
+            unit: 1, bank: 3, address: 0, data_type: "u16".into(), byte_order: "ABCD".into(),
+            kind: DynKind::Route { slave_unit: 1, connection_kind: "tcp".into(), src_fc: 3, src_addr: 0, count: 1, scale: 0.1, offset: -40.0, src_byte_order: "ABCD".into() },
+            interval_ms: 1000.0,
+        };
+        assert_eq!(transform_route_words(&d, &[700], 0.1, -40.0, "ABCD"), vec![30]);
+        // Identity transform mirrors verbatim.
+        assert_eq!(transform_route_words(&d, &[1234], 1.0, 0.0, "ABCD"), vec![1234]);
+        // Byte-order conversion only (source BADC, expose ABCD): 0x2C01 → 0x012C.
+        let f = DynReg { data_type: "u16".into(), byte_order: "ABCD".into(), ..d.clone() };
+        assert_eq!(transform_route_words(&f, &[0x2C01], 1.0, 0.0, "BADC"), vec![0x012C]);
     }
 
     #[test]
@@ -2797,8 +3183,15 @@ mod tests {
             unit: None, display_format: None,
         };
         assert!(validate_register(&ok).is_ok());
-        let bad = SimRegister { data_type: "f64".into(), ..ok.clone() };
+        // 4-word types are now supported (u64/i64/f64), including their orders.
+        assert!(validate_register(&SimRegister { data_type: "f64".into(), byte_order: "DCBA".into(), ..ok.clone() }).is_ok());
+        assert!(validate_register(&SimRegister { data_type: "u64".into(), byte_order: "HALF_SWAP".into(), ..ok.clone() }).is_ok());
+        // Unknown type is still rejected.
+        let bad = SimRegister { data_type: "u128".into(), ..ok.clone() };
         assert!(validate_register(&bad).is_err());
+        // HALF_SWAP is 4-word only — invalid on a 2-word type.
+        let bad_order = SimRegister { data_type: "u32".into(), byte_order: "HALF_SWAP".into(), ..ok.clone() };
+        assert!(validate_register(&bad_order).is_err());
     }
 
     #[test]
@@ -3043,7 +3436,7 @@ mod tests {
         // ROUTE: engine B, unit 1 holding[0] mirrors A unit7 holding[0]
         let route = DynReg {
             unit: 1, bank: 3, address: 0, data_type: "u16".into(), byte_order: "ABCD".into(), interval_ms: 50.0,
-            kind: DynKind::Route { slave_unit: 7, connection_kind: "tcp".into(), src_fc: 3, src_addr: 0, count: 1 },
+            kind: DynKind::Route { slave_unit: 7, connection_kind: "tcp".into(), src_fc: 3, src_addr: 0, count: 1, scale: 1.0, offset: 0.0, src_byte_order: "ABCD".into() },
         };
         let mut b = SimEngine::new();
         let binfo = b.start(NoopSink, "ws".into(), "127.0.0.1", 0, 100, HashMap::new(), vec![route], tcp_map, rtu_map, Vec::new()).await.unwrap();
@@ -3067,7 +3460,7 @@ mod tests {
         let rules = vec![RuleDef {
             id: 1, enabled: true, sort_order: 0,
             trigger: Trigger::Condition { unit: 1, bank: 3, address: 0, op: ">=".into(), value: 100 },
-            actions: vec![Action::Set { unit: 1, bank: 1, address: 0, value: 1 }],
+            actions: vec![timed(Action::Set { unit: 1, bank: 1, address: 0, value: 1 })],
         }];
         let mut engine = SimEngine::new();
         // match the REAL start signature; rules is the new trailing arg

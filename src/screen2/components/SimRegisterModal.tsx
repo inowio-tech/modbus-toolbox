@@ -35,8 +35,9 @@ const EMPTY: SimRegister = {
 };
 
 const DEVICE_PRESETS = ["temperature", "humidity", "pressure", "flow", "vibration", "analog", "discrete", "counter"];
-const GENERATOR_KINDS = ["sine", "ramp", "random", "toggle"];
-const MULTI_WORD_TYPES = ["u32", "i32", "f32"];
+const GENERATOR_KINDS = ["sine", "ramp", "decrement", "step", "random", "toggle"];
+const MULTI_WORD_TYPES = ["u32", "i32", "f32", "u64", "i64", "f64"];
+const BYTE_ORDERS = ["ABCD", "BADC", "CDAB", "DCBA"];
 
 type SourceParams = {
   kind?: string;
@@ -48,6 +49,9 @@ type SourceParams = {
   connectionKind?: string;
   functionCode?: number;
   address?: number;
+  scale?: number;
+  offset?: number;
+  srcByteOrder?: string;
 };
 
 function parseSourceParams(raw: string | undefined): SourceParams {
@@ -76,6 +80,9 @@ export default function SimRegisterModal(props: {
   const [sourceConnectionKind, setSourceConnectionKind] = useState("tcp");
   const [sourceFunctionCode, setSourceFunctionCode] = useState(3);
   const [sourceAddress, setSourceAddress] = useState(1);
+  const [sourceScale, setSourceScale] = useState(1);
+  const [sourceOffset, setSourceOffset] = useState(0);
+  const [sourceByteOrder, setSourceByteOrder] = useState("");
 
   useEffect(() => {
     if (!props.open) return;
@@ -91,6 +98,9 @@ export default function SimRegisterModal(props: {
     setSourceConnectionKind(params.connectionKind ?? "tcp");
     setSourceFunctionCode(params.functionCode ?? 3);
     setSourceAddress(params.address ?? 1);
+    setSourceScale(params.scale ?? 1);
+    setSourceOffset(params.offset ?? 0);
+    setSourceByteOrder(params.srcByteOrder ?? "");
   }, [props.open, props.initial]);
 
   useEffect(() => {
@@ -140,7 +150,15 @@ export default function SimRegisterModal(props: {
         : reg.valueSource === "device"
         ? { preset, min, max, periodMs }
         : reg.valueSource === "route"
-        ? { slaveUnitId: sourceUnitId, connectionKind: sourceConnectionKind, functionCode: sourceFunctionCode, address: sourceAddress }
+        ? {
+            slaveUnitId: sourceUnitId,
+            connectionKind: sourceConnectionKind,
+            functionCode: sourceFunctionCode,
+            address: sourceAddress,
+            scale: sourceScale,
+            offset: sourceOffset,
+            ...(sourceByteOrder ? { srcByteOrder: sourceByteOrder } : {}),
+          }
         : {}
     );
     void props.onSubmit({ ...reg, sourceParams });
@@ -191,6 +209,9 @@ export default function SimRegisterModal(props: {
                   <option value="u32">u32</option>
                   <option value="i32">i32</option>
                   <option value="f32">f32</option>
+                  <option value="u64">u64</option>
+                  <option value="i64">i64</option>
+                  <option value="f64">f64</option>
                 </>
               )}
             </select>
@@ -263,6 +284,28 @@ export default function SimRegisterModal(props: {
                   onChange={(e) => setSourceAddress(Number(e.target.value))}
                   className="rounded-lg border border-slate-300 bg-white px-2 py-1 dark:border-slate-700 dark:bg-slate-900" />
               </label>
+              <div className="grid grid-cols-2 gap-2">
+                <label className="flex flex-col gap-1 text-xs">Scale
+                  <input aria-label="Scale" type="number" step="any" value={sourceScale}
+                    onChange={(e) => setSourceScale(Number(e.target.value))}
+                    className="rounded-lg border border-slate-300 bg-white px-2 py-1 dark:border-slate-700 dark:bg-slate-900" />
+                </label>
+                <label className="flex flex-col gap-1 text-xs">Offset
+                  <input aria-label="Offset" type="number" step="any" value={sourceOffset}
+                    onChange={(e) => setSourceOffset(Number(e.target.value))}
+                    className="rounded-lg border border-slate-300 bg-white px-2 py-1 dark:border-slate-700 dark:bg-slate-900" />
+                </label>
+              </div>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">Exposed = source × scale + offset.</p>
+              {isMultiWord ? (
+                <label className="flex flex-col gap-1 text-xs">Source byte order
+                  <select aria-label="Source byte order" value={sourceByteOrder} onChange={(e) => setSourceByteOrder(e.target.value)}
+                    className="rounded-lg border border-slate-300 bg-white px-2 py-1 dark:border-slate-700 dark:bg-slate-900">
+                    <option value="">Same as register ({reg.byteOrder})</option>
+                    {BYTE_ORDERS.map((b) => <option key={b} value={b}>{b}</option>)}
+                  </select>
+                </label>
+              ) : null}
             </>
           )}
 

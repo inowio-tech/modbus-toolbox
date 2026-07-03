@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
+import { FiX } from "react-icons/fi";
 import { useOutletContext } from "react-router-dom";
 
 import type { Screen2OutletContext } from "../Screen2Layout";
@@ -28,6 +29,25 @@ function writeTab(ws: string, tab: TabKey) {
   try { window.localStorage.setItem(TAB_KEY(ws), tab); } catch { /* ignore */ }
 }
 
+// Turn raw backend/SQLite errors into something a user can act on. Unknown
+// errors pass through unchanged so we never hide real diagnostics.
+function humanizeError(raw: string): string {
+  const msg = raw.replace(/^Error:\s*/i, "");
+  if (/UNIQUE constraint failed/i.test(msg)) {
+    return "A register already exists at that unit and address. Pick a different address or unit.";
+  }
+  if (/would overlap existing register/i.test(msg)) {
+    return "This device or register would overlap addresses already in use. Choose a different base address or unit.";
+  }
+  if (/address .* out of range/i.test(msg)) {
+    return "Address is out of range (0–65535).";
+  }
+  if (/port/i.test(msg) && /(in use|address already|bind)/i.test(msg)) {
+    return "That port is already in use. Stop the other server or choose a different port.";
+  }
+  return msg;
+}
+
 export default function TcpSimulatorPage() {
   const { workspace } = useOutletContext<Screen2OutletContext>();
   const ws = workspace.name;
@@ -42,6 +62,7 @@ export default function TcpSimulatorPage() {
   const [modalRule, setModalRule] = useState<SimRule | null>(null);
   const [deviceEdit, setDeviceEdit] = useState<{ kind: "rename" | "rebase"; device: SimDevice } | null>(null);
   const [confirmDeleteDevice, setConfirmDeleteDevice] = useState<SimDevice | null>(null);
+  const [confirmDeleteRegister, setConfirmDeleteRegister] = useState<PageRegister | null>(null);
 
   const changeTab = useCallback((tab: TabKey) => { setActiveTab(tab); writeTab(ws, tab); }, [ws]);
   const changeAddrFmt = useCallback((f: AddressFormat) => { setAddrFmt(f); writeAddressFormat(ws, f); }, [ws]);
@@ -81,12 +102,21 @@ export default function TcpSimulatorPage() {
     <div className="flex min-h-full flex-1 flex-col gap-4 px-3 sm:px-0">
       <div>
         <p className="text-sm font-semibold uppercase tracking-[0.35em] text-emerald-700 dark:font-normal dark:text-emerald-300">TCP Simulator</p>
-        <div className="mt-2 text-sm text-slate-600 dark:text-slate-300">Expose registers as a Modbus TCP server for external clients.</div>
+        <div className="mt-2 text-sm text-slate-600 dark:text-slate-300">Expose devices (including TCP & RTU) and registers as a Modbus TCP server for external clients.</div>
       </div>
 
       {sim.error ? (
-        <div className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-800 dark:text-rose-200">
-          {sim.error}
+        <div className="flex items-start justify-between gap-3 rounded-xl border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-800 dark:text-rose-200">
+          <span>{humanizeError(sim.error)}</span>
+          <button
+            type="button"
+            aria-label="Dismiss error"
+            title="Dismiss"
+            onClick={() => sim.setError(null)}
+            className="shrink-0 rounded-md p-0.5 text-rose-600 transition hover:bg-rose-500/15 dark:text-rose-300"
+          >
+            <FiX className="h-4 w-4" aria-hidden="true" />
+          </button>
         </div>
       ) : null}
 
@@ -120,7 +150,7 @@ export default function TcpSimulatorPage() {
               addrFmt={addrFmt}
               onAddrFmt={changeAddrFmt}
               onSelectRegister={(r) => setSelectedRegisterId(r.id)}
-              onDelete={(id) => void deleteRegister(id)}
+              onDelete={(id) => setConfirmDeleteRegister(sim.registers.find((r) => r.id === id) ?? null)}
               onAddRegister={() => setAddRegisterOpen(true)}
               onAddDevice={() => setDeviceModalOpen(true)}
             />
@@ -164,7 +194,7 @@ export default function TcpSimulatorPage() {
               running={sim.status.running}
               onSave={(reg) => void sim.updateRegister(reg)}
               onDuplicate={(reg) => void sim.duplicateRegister(reg)}
-              onDelete={(id) => void deleteRegister(id)}
+              onDelete={(id) => setConfirmDeleteRegister(sim.registers.find((r) => r.id === id) ?? null)}
               onClose={() => setSelectedRegisterId(null)}
               onViewDevice={() => changeTab("devices")}
             />
@@ -225,6 +255,28 @@ export default function TcpSimulatorPage() {
           setConfirmDeleteDevice(null);
         }}
         onClose={() => setConfirmDeleteDevice(null)}
+      />
+
+      <ConfirmDialog
+        open={confirmDeleteRegister !== null}
+        title="Delete register?"
+        message={(() => {
+          if (!confirmDeleteRegister) return "";
+          const r = confirmDeleteRegister;
+          const name = r.alias?.trim() ? `"${r.alias.trim()}"` : `register at unit ${r.unitId}, address ${r.address}`;
+          const lastOfDevice =
+            r.deviceInstanceId != null &&
+            sim.registers.filter((x) => x.deviceInstanceId === r.deviceInstanceId).length === 1;
+          const dev = lastOfDevice ? sim.devices.find((d) => d.id === r.deviceInstanceId) : undefined;
+          const tail = dev ? ` This is the last register of device "${dev.name}", which will also be removed.` : "";
+          return `Delete ${name}? This can't be undone.${tail}`;
+        })()}
+        confirmLabel="Delete register"
+        onConfirm={() => {
+          if (confirmDeleteRegister) void deleteRegister(confirmDeleteRegister.id);
+          setConfirmDeleteRegister(null);
+        }}
+        onClose={() => setConfirmDeleteRegister(null)}
       />
 
       <PromptDialog
