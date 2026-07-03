@@ -1,3 +1,5 @@
+import { FiEdit2, FiTrash2 } from "react-icons/fi";
+
 import type { SimRule } from "../components/SimRuleModal";
 import type { SimDevice } from "./useSimulatorData";
 
@@ -137,20 +139,26 @@ export default function RulesTab(props: {
                   />
                 </td>
                 <td className="text-right">
-                  <button
-                    type="button"
-                    className="mr-2 text-emerald-700 dark:text-emerald-300"
-                    onClick={() => onEdit(rule)}
-                  >
-                    Edit
-                  </button>
-                  <button
-                    type="button"
-                    className="text-rose-600 dark:text-rose-300"
-                    onClick={() => onDelete(rule.id)}
-                  >
-                    Delete
-                  </button>
+                  <div className="flex items-center justify-end gap-1">
+                    <button
+                      type="button"
+                      aria-label={`Edit rule ${rule.name}`}
+                      title="Edit rule"
+                      className="rounded-md p-1.5 text-emerald-700 transition hover:bg-emerald-500/10 dark:text-emerald-300"
+                      onClick={() => onEdit(rule)}
+                    >
+                      <FiEdit2 className="h-4 w-4" aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Delete rule ${rule.name}`}
+                      title="Delete rule"
+                      className="rounded-md p-1.5 text-rose-600 transition hover:bg-rose-500/10 dark:text-rose-300"
+                      onClick={() => onDelete(rule.id)}
+                    >
+                      <FiTrash2 className="h-4 w-4" aria-hidden="true" />
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}

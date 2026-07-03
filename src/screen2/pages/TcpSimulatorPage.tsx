@@ -7,6 +7,7 @@ import SimRegisterModal, { type SimRegister } from "../components/SimRegisterMod
 import SimRuleModal, { type SimRule } from "../components/SimRuleModal";
 import DevicesTab from "../simulator/DevicesTab";
 import LiveValuesTab from "../simulator/LiveValuesTab";
+import PromptDialog from "../simulator/PromptDialog";
 import RegisterInspector from "../simulator/RegisterInspector";
 import RegistersTab from "../simulator/RegistersTab";
 import RulesTab from "../simulator/RulesTab";
@@ -38,6 +39,7 @@ export default function TcpSimulatorPage() {
   const [deviceModalOpen, setDeviceModalOpen] = useState(false);
   const [ruleModalOpen, setRuleModalOpen] = useState(false);
   const [modalRule, setModalRule] = useState<SimRule | null>(null);
+  const [deviceEdit, setDeviceEdit] = useState<{ kind: "rename" | "rebase"; device: SimDevice } | null>(null);
 
   const changeTab = useCallback((tab: TabKey) => { setActiveTab(tab); writeTab(ws, tab); }, [ws]);
   const changeAddrFmt = useCallback((f: AddressFormat) => { setAddrFmt(f); writeAddressFormat(ws, f); }, [ws]);
@@ -64,21 +66,8 @@ export default function TcpSimulatorPage() {
     if (selectedRegisterId === id) setSelectedRegisterId(null);
   }, [sim, selectedRegisterId]);
 
-  const handleRename = useCallback((device: SimDevice) => {
-    const name = window.prompt("Rename device", device.name);
-    if (!name || name === device.name) return;
-    void sim.renameDevice(device, name);
-  }, [sim]);
-
-  const handleRebase = useCallback((device: SimDevice) => {
-    const input = window.prompt("New base address", String(device.baseAddress));
-    if (input === null) return;
-    const trimmed = input.trim();
-    if (trimmed === "") return;
-    const n = Number(trimmed);
-    if (!Number.isInteger(n)) { sim.setError("Enter a whole-number base address"); return; }
-    void sim.rebaseDevice(device.id, n);
-  }, [sim]);
+  const handleRename = useCallback((device: SimDevice) => setDeviceEdit({ kind: "rename", device }), []);
+  const handleRebase = useCallback((device: SimDevice) => setDeviceEdit({ kind: "rebase", device }), []);
 
   const counts: Partial<Record<TabKey, number>> = {
     registers: sim.registers.length,
@@ -87,10 +76,10 @@ export default function TcpSimulatorPage() {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="flex min-h-full flex-1 flex-col gap-4 px-3 sm:px-0">
       <div>
-        <h1 className="text-lg font-semibold text-slate-900 dark:text-slate-100">TCP Simulator</h1>
-        <p className="text-sm text-slate-500 dark:text-slate-400">Expose registers as a Modbus TCP server for external clients.</p>
+        <p className="text-sm font-semibold uppercase tracking-[0.35em] text-emerald-700 dark:font-normal dark:text-emerald-300">TCP Simulator</p>
+        <div className="mt-2 text-sm text-slate-600 dark:text-slate-300">Expose registers as a Modbus TCP server for external clients.</div>
       </div>
 
       {sim.error ? (
@@ -109,11 +98,15 @@ export default function TcpSimulatorPage() {
         onSaveConfig={(patch) => void sim.saveConfig(patch)}
         onChangeExpose={(host) => void sim.saveConfig({ host })}
         onChangePort={(port) => void sim.saveConfig({ port })}
+        onRefresh={() => void sim.reload()}
+        registerCount={sim.registers.length}
+        unitCount={new Set(sim.registers.map((r) => r.unitId)).size}
+        deviceCount={sim.devices.length}
       />
 
       <SimTabBar active={activeTab} onChange={changeTab} counts={counts} />
 
-      <div className="flex gap-4">
+      <div className="flex flex-col gap-4 lg:flex-row">
         <div className="min-w-0 flex-1">
           {activeTab === "registers" ? (
             <RegistersTab
@@ -160,7 +153,7 @@ export default function TcpSimulatorPage() {
         </div>
 
         {activeTab === "registers" && selectedRegister ? (
-          <div className="w-96 shrink-0">
+          <div className="w-full lg:w-96 lg:shrink-0">
             <RegisterInspector
               register={selectedRegister}
               devices={sim.devices}
@@ -178,7 +171,7 @@ export default function TcpSimulatorPage() {
         ) : null}
       </div>
 
-      <SimFooterBar status={sim.status} config={sim.config} lastUpdated={sim.lastUpdated} onRefresh={() => void sim.reload()} />
+      <SimFooterBar status={sim.status} config={sim.config} lastUpdated={sim.lastUpdated} />
 
       <SimRegisterModal
         open={addRegisterOpen}
@@ -190,6 +183,7 @@ export default function TcpSimulatorPage() {
       <AddDeviceModal
         open={deviceModalOpen}
         templates={sim.deviceTemplates}
+        existingRegisters={sim.registers}
         onClose={() => setDeviceModalOpen(false)}
         onSubmit={async (payload) => { await sim.addDevice(payload); setDeviceModalOpen(false); }}
       />
@@ -203,6 +197,36 @@ export default function TcpSimulatorPage() {
           else await sim.addRule(rule);
           setRuleModalOpen(false);
         }}
+      />
+
+      <PromptDialog
+        open={deviceEdit?.kind === "rename"}
+        title="Rename device"
+        label="Device name"
+        initialValue={deviceEdit?.device.name ?? ""}
+        submitLabel="Rename"
+        validate={(v) => (v.trim() === "" ? "Name can't be empty" : null)}
+        onSubmit={(v) => { if (deviceEdit) void sim.renameDevice(deviceEdit.device, v.trim()); setDeviceEdit(null); }}
+        onClose={() => setDeviceEdit(null)}
+      />
+
+      <PromptDialog
+        open={deviceEdit?.kind === "rebase"}
+        title="Re-base device"
+        label="New base address"
+        initialValue={deviceEdit ? String(deviceEdit.device.baseAddress) : "0"}
+        inputMode="numeric"
+        hint="Moves all of this device's registers together to a new start address — their relative offsets stay the same (e.g. base 0→100 shifts Temp 0→100, Humidity 1→101)."
+        submitLabel="Re-base"
+        validate={(v) => {
+          const t = v.trim();
+          if (t === "") return "Enter a base address";
+          const n = Number(t);
+          if (!Number.isInteger(n) || n < 0 || n > 65535) return "Enter a whole number between 0 and 65535";
+          return null;
+        }}
+        onSubmit={(v) => { if (deviceEdit) void sim.rebaseDevice(deviceEdit.device.id, Number(v.trim())); setDeviceEdit(null); }}
+        onClose={() => setDeviceEdit(null)}
       />
     </div>
   );

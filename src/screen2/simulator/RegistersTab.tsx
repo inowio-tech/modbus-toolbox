@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { FiTrash2, FiX } from "react-icons/fi";
 
 import type { SimDevice, SimStatus, SnapshotRow } from "./useSimulatorData";
 import {
@@ -185,14 +186,27 @@ export default function RegistersTab(props: RegistersTabProps) {
           + Add Device
         </button>
 
-        <input
-          type="text"
-          placeholder="Search registers..."
-          aria-label="Search registers"
-          value={filter.search}
-          onChange={(e) => updateFilter({ search: e.target.value })}
-          className="min-w-40 flex-1 rounded-lg border border-slate-300 bg-white px-2 py-1 text-sm dark:border-slate-700 dark:bg-slate-900"
-        />
+        <div className="relative flex min-w-40 flex-1 items-center">
+          <input
+            type="text"
+            placeholder="Search registers..."
+            aria-label="Search registers"
+            value={filter.search}
+            onChange={(e) => updateFilter({ search: e.target.value })}
+            className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1 pr-7 text-sm dark:border-slate-700 dark:bg-slate-900"
+          />
+          {filter.search ? (
+            <button
+              type="button"
+              aria-label="Clear search"
+              title="Clear search"
+              onClick={() => updateFilter({ search: "" })}
+              className="absolute right-1.5 rounded p-0.5 text-slate-400 transition hover:text-slate-600 dark:hover:text-slate-200"
+            >
+              <FiX className="h-4 w-4" aria-hidden="true" />
+            </button>
+          ) : null}
+        </div>
 
         <label className="flex items-center gap-1 text-xs">
           <span className="sr-only">Filter by unit</span>
@@ -349,13 +363,14 @@ export default function RegistersTab(props: RegistersTabProps) {
                     <button
                       type="button"
                       aria-label={`Delete register ${r.alias}`}
-                      className="text-rose-600 dark:text-rose-300"
+                      title="Delete register"
+                      className="rounded-md p-1.5 text-rose-600 transition hover:bg-rose-500/10 dark:text-rose-300"
                       onClick={(e) => {
                         e.stopPropagation();
                         onDelete(r.id);
                       }}
                     >
-                      Delete
+                      <FiTrash2 className="h-4 w-4" aria-hidden="true" />
                     </button>
                   </td>
                 </tr>

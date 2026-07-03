@@ -2,13 +2,20 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
 import SimStatusDashboard from "./SimStatusDashboard";
 
-const base = { config: { enabled: false, host: "0.0.0.0", port: 502, tickMs: 100 }, status: { running: false, listen: null, clientCount: 0 }, listen: null, busy: false, onStart: vi.fn(), onStop: vi.fn(), onSaveConfig: vi.fn(), onChangeExpose: vi.fn(), onChangePort: vi.fn() };
+const base = { config: { enabled: false, host: "0.0.0.0", port: 502, tickMs: 100 }, status: { running: false, listen: null, clientCount: 0 }, listen: null, busy: false, onStart: vi.fn(), onStop: vi.fn(), onSaveConfig: vi.fn(), onChangeExpose: vi.fn(), onChangePort: vi.fn(), onRefresh: vi.fn(), registerCount: 0, unitCount: 0, deviceCount: 0 };
 
 describe("SimStatusDashboard", () => {
   it("shows Start when stopped and calls onStart", () => {
     render(<SimStatusDashboard {...base} />);
     fireEvent.click(screen.getByRole("button", { name: /start/i }));
     expect(base.onStart).toHaveBeenCalled();
+  });
+
+  it("calls onRefresh when the Refresh button is clicked", () => {
+    const onRefresh = vi.fn();
+    render(<SimStatusDashboard {...base} onRefresh={onRefresh} />);
+    fireEvent.click(screen.getByRole("button", { name: /refresh/i }));
+    expect(onRefresh).toHaveBeenCalled();
   });
 
   it("shows client count and resolved address when running", () => {

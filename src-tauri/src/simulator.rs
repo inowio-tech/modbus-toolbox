@@ -1291,6 +1291,7 @@ pub fn rebase_children(children: &[SimRegister], old_base: i64, new_base: i64) -
 #[tauri::command]
 pub fn simulator_add_device(
     app: tauri::AppHandle,
+    state: tauri::State<'_, SimulatorState>,
     name: String,
     device_name: String,
     template_key: String,
@@ -1347,6 +1348,13 @@ pub fn simulator_add_device(
 
     tx.commit().map_err(|e| e.to_string())?;
 
+    // Push the new registers into the live banks so a device added while the
+    // server is running is served immediately (parity with add/update register).
+    // No-op when the server is stopped — the next Start rebuilds banks from the DB.
+    for reg in &regs {
+        apply_to_running(&state, &ws, reg, false);
+    }
+
     Ok(device_id)
 }
 
@@ -1358,10 +1366,23 @@ pub fn simulator_list_devices(app: tauri::AppHandle, name: String) -> Result<Vec
 }
 
 #[tauri::command]
-pub fn simulator_delete_device(app: tauri::AppHandle, name: String, id: i64) -> Result<(), String> {
+pub fn simulator_delete_device(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SimulatorState>,
+    name: String,
+    id: i64,
+) -> Result<(), String> {
     let ws = validate_workspace_name(&name)?;
     let conn = open_workspace_db(&app, &ws)?;
-    db_delete_device(&conn, id).map_err(|e| e.to_string())
+    // Capture the device's registers before the cascade delete so we can also
+    // drop them from the live banks (otherwise a running server keeps serving
+    // the deleted device's stale addresses until the next Start).
+    let children = db_list_registers_for_device(&conn, id).map_err(|e| e.to_string())?;
+    db_delete_device(&conn, id).map_err(|e| e.to_string())?;
+    for reg in &children {
+        apply_to_running(&state, &ws, reg, true);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1374,6 +1395,7 @@ pub fn simulator_update_device(app: tauri::AppHandle, name: String, device: SimD
 #[tauri::command]
 pub fn simulator_rebase_device(
     app: tauri::AppHandle,
+    state: tauri::State<'_, SimulatorState>,
     name: String,
     id: i64,
     new_base_address: i64,
@@ -1402,6 +1424,15 @@ pub fn simulator_rebase_device(
     db_update_device(&conn, &device).map_err(|e| e.to_string())?;
     for reg in &shifted {
         db_update_register(&conn, reg).map_err(|e| e.to_string())?;
+    }
+
+    // Move the registers in the live banks too: clear all old addresses first,
+    // then place the shifted ones (clear-before-place is safe when spans overlap).
+    for reg in &children {
+        apply_to_running(&state, &ws, reg, true);
+    }
+    for reg in &shifted {
+        apply_to_running(&state, &ws, reg, false);
     }
     Ok(())
 }

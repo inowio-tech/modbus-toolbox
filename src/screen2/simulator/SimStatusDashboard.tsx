@@ -14,6 +14,10 @@ type Props = {
   onSaveConfig: (patch: Partial<SimConfig>) => void;
   onChangeExpose: (host: string) => void;
   onChangePort: (port: number) => void;
+  onRefresh: () => void;
+  registerCount: number;
+  unitCount: number;
+  deviceCount: number;
 };
 
 const CARD_CLASS = "rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-white/5";
@@ -28,27 +32,28 @@ export default function SimStatusDashboard({
   onSaveConfig,
   onChangeExpose,
   onChangePort,
+  onRefresh,
+  registerCount,
+  unitCount,
+  deviceCount,
 }: Props) {
   const [addressesExpanded, setAddressesExpanded] = useState(false);
 
   const host = config?.host ?? "0.0.0.0";
   const port = config?.port ?? 502;
-  const exposeLabel = host === "127.0.0.1" ? "Local" : "LAN";
   const effectiveListen = status.listen ?? listen;
 
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        {/* Listening Address */}
+        {/* Exposed surface */}
         <div className={CARD_CLASS}>
-          <div className="mb-1 flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">Listening Address</span>
-            <span className="inline-block rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-800 dark:text-emerald-200">
-              {exposeLabel}
-            </span>
-          </div>
-          <p className="font-mono text-sm text-slate-900 dark:text-slate-100">
-            {host}:{port}
+          <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">Exposed</span>
+          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+            {registerCount} register{registerCount === 1 ? "" : "s"}
+          </p>
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            {unitCount} unit{unitCount === 1 ? "" : "s"} · {deviceCount} device{deviceCount === 1 ? "" : "s"}
           </p>
         </div>
 
@@ -94,16 +99,16 @@ export default function SimStatusDashboard({
           {status.running ? (
             <p className="mt-1 text-sm text-slate-900 dark:text-slate-100">{config?.tickMs ?? 0} ms</p>
           ) : (
-            <label className="mt-1 flex items-center gap-1 text-sm">
+            <label className="mt-1 flex items-center gap-2 text-sm">
               <input
                 type="number"
                 aria-label="Tick interval (ms)"
-                className="w-20 rounded-lg border border-slate-300 bg-white px-2 py-1 dark:border-slate-700 dark:bg-slate-900"
+                className="min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-2 py-1 dark:border-slate-700 dark:bg-slate-900"
                 value={config?.tickMs ?? 0}
                 min={1}
                 onChange={(e) => onSaveConfig({ tickMs: Number(e.target.value) })}
               />
-              <span className="text-slate-500 dark:text-slate-400">ms</span>
+              <span className="shrink-0 text-slate-500 dark:text-slate-400">ms</span>
             </label>
           )}
         </div>
@@ -126,7 +131,7 @@ export default function SimStatusDashboard({
               disabled={status.running}
               onChange={(e) => onChangeExpose(e.target.value)}
             >
-              <option value="0.0.0.0">LAN (0.0.0.0)</option>
+              <option value="0.0.0.0">LAN / Intranet (0.0.0.0)</option>
               <option value="127.0.0.1">Local only (127.0.0.1)</option>
             </select>
           </label>
@@ -164,6 +169,15 @@ export default function SimStatusDashboard({
               Start
             </button>
           )}
+
+          <button
+            type="button"
+            aria-label="Refresh"
+            onClick={onRefresh}
+            className="ml-auto rounded-full border border-slate-300 bg-white px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-white/5"
+          >
+            Refresh
+          </button>
         </div>
       </div>
     </div>

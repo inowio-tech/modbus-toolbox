@@ -10,7 +10,6 @@ type Props = {
   status: SimStatus;
   config: SimConfig | null;
   lastUpdated: number | null;
-  onRefresh: () => void;
 };
 
 function fmtTime(epochMs: number | null): string {
@@ -18,25 +17,23 @@ function fmtTime(epochMs: number | null): string {
   return new Date(epochMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
-export default function SimFooterBar({ status, config, lastUpdated, onRefresh }: Props) {
+// Desktop-style status bar pinned to the bottom of the page's scroll viewport,
+// mirroring SlaveStatusBar. `-bottom-4 -mb-4` cancels the shared scroll
+// container's `pb-4` so the bar sits flush at the very bottom (plain `bottom-0`
+// leaves a 16px gap inside the padding in Chromium/WebView2); `sm:-mx-4` makes
+// it full-bleed; `mt-auto` (with the page root `min-h-full flex flex-col`) keeps
+// it at the window bottom even when content is short.
+export default function SimFooterBar({ status, config, lastUpdated }: Props) {
   return (
-    <div className="flex flex-wrap items-center gap-4 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-xs text-slate-600 dark:border-slate-800 dark:bg-white/5 dark:text-slate-300">
+    <div className="sticky -bottom-4 z-20 mt-auto -mb-4 flex flex-wrap items-center gap-4 border-t border-slate-200 bg-white/90 px-4 py-1.5 text-xs text-slate-600 backdrop-blur supports-backdrop-filter:bg-white/70 sm:-mx-4 dark:border-slate-800 dark:bg-slate-900/90 dark:text-slate-300 dark:supports-backdrop-filter:bg-slate-900/70">
       <span className="flex items-center gap-1.5">
         <span className={`inline-block h-2 w-2 rounded-full ${status.running ? "bg-emerald-500" : "bg-slate-400"}`} />
-        {status.running ? "running" : "stopped"}
+        {status.running ? "Running" : "Stopped"}
       </span>
       <span>Port {config?.port ?? "—"}</span>
       <span>Tick {config?.tickMs ?? "—"} ms</span>
       <span>{status.clientCount} client{status.clientCount === 1 ? "" : "s"}</span>
-      <span>updated {fmtTime(lastUpdated)}</span>
-      <button
-        type="button"
-        aria-label="Refresh"
-        onClick={onRefresh}
-        className="ml-auto rounded-full border border-emerald-600/60 bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-800 dark:text-emerald-200"
-      >
-        Refresh
-      </button>
+      <span>Updated {fmtTime(lastUpdated)}</span>
     </div>
   );
 }
