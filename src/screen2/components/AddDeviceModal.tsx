@@ -84,7 +84,16 @@ export default function AddDeviceModal(props: {
 
   const unitValid = Number.isInteger(unitId) && unitId >= 0 && unitId <= 255;
   const baseValid = Number.isInteger(baseAddress) && baseAddress >= 0 && baseAddress <= 65535;
-  const configValid = unitValid && baseValid;
+  const nameValid = deviceName.trim() !== "";
+  const configValid = unitValid && baseValid && nameValid;
+
+  // Prefill the device name from the chosen template (once, while empty) so a
+  // device can't be created nameless — the user can still edit it.
+  useEffect(() => {
+    if (!props.open || !selected) return;
+    setDeviceName((prev) => (prev.trim() === "" ? selected.name : prev));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected?.templateKey, props.open]);
 
   // Addresses already taken by existing registers, keyed unit:bank:address
   // (span-aware), so the wizard can flag collisions before Create hits the
@@ -260,7 +269,9 @@ export default function AddDeviceModal(props: {
 
             {!configValid && (
               <div className="text-xs text-rose-600 dark:text-rose-400">
-                Unit ID must be 0–255 and base address 0–65535.
+                {!nameValid
+                  ? "Device name is required."
+                  : "Unit ID must be 0–255 and base address 0–65535."}
               </div>
             )}
 

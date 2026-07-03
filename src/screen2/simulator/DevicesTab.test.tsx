@@ -7,7 +7,6 @@ const base = () => ({
   devices: [dev],
   registers: [{ id: 1, deviceInstanceId: 7 } as any, { id: 2, deviceInstanceId: 7 } as any],
   onAddDevice: vi.fn(),
-  onToggleEnabled: vi.fn(),
   onRename: vi.fn(),
   onRebase: vi.fn(),
   onDelete: vi.fn(),
@@ -18,12 +17,6 @@ describe("DevicesTab", () => {
     render(<DevicesTab {...base()} />);
     expect(screen.getByText("Temp Sensor A")).toBeInTheDocument();
     expect(screen.getByText(/2 registers/i)).toBeInTheDocument();
-  });
-  it("toggles enabled", () => {
-    const p = base();
-    render(<DevicesTab {...p} />);
-    fireEvent.click(screen.getByRole("checkbox", { name: /enable/i }));
-    expect(p.onToggleEnabled).toHaveBeenCalledWith(dev, false);
   });
   it("empty state offers Add Device", () => {
     const p = { ...base(), devices: [] };

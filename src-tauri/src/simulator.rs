@@ -132,28 +132,32 @@ pub struct PresetParams {
     pub period_ms: f64,
 }
 
-pub fn preset_value(preset: &str, p: &PresetParams, elapsed_ms: f64) -> f64 {
+pub fn preset_value(preset: &str, p: &PresetParams, elapsed_ms: f64, seed: u64) -> f64 {
     let span = p.max - p.min;
     let period = if p.period_ms <= 0.0 { 60000.0 } else { p.period_ms };
     let clamp = |v: f64| v.max(p.min).min(p.max);
+    // Per-register phase offset (a deterministic fraction of the period from the
+    // seed) so two registers with the SAME preset+params don't move in lockstep.
+    let e = elapsed_ms + unit_random(seed) * period;
     // deterministic small wobble within the band, amplitude ~2% of span
-    let wobble = |amp: f64, fast: f64| (span * amp) * (2.0 * PI * elapsed_ms / fast).sin();
+    let wobble = |amp: f64, fast: f64| (span * amp) * (2.0 * PI * e / fast).sin();
     match preset {
         // slow drift across the band + small noise
         "temperature" | "humidity" | "pressure" | "flow" | "analog" => {
             let mid = p.min + span / 2.0;
-            clamp(mid + (span / 2.0 * 0.8) * (2.0 * PI * elapsed_ms / period).sin() + wobble(0.02, period / 13.0))
+            clamp(mid + (span / 2.0 * 0.8) * (2.0 * PI * e / period).sin() + wobble(0.02, period / 13.0))
         }
         // higher-frequency noisy signal
         "vibration" => {
             let mid = p.min + span / 2.0;
-            clamp(mid + (span / 2.0 * 0.5) * (2.0 * PI * elapsed_ms / (period / 20.0)).sin() + wobble(0.1, period / 47.0))
+            clamp(mid + (span / 2.0 * 0.5) * (2.0 * PI * e / (period / 20.0)).sin() + wobble(0.1, period / 47.0))
         }
         // on/off by half period
         "discrete" => {
-            if (elapsed_ms % period) < period / 2.0 { p.max } else { p.min }
+            if (e % period) < period / 2.0 { p.max } else { p.min }
         }
-        // monotonic within [min,max], wraps at max
+        // monotonic within [min,max], wraps at max — NOT phase-shifted (a
+        // counter is monotonic by definition); uses the raw elapsed time.
         "counter" => {
             let step_per_period = span.max(1.0);
             p.min + ((elapsed_ms / period) * step_per_period) % span.max(1.0)
@@ -168,7 +172,7 @@ pub fn preset_value(preset: &str, p: &PresetParams, elapsed_ms: f64) -> f64 {
 #[derive(Debug, Clone)]
 pub enum DynKind {
     Generator { kind: String, params: GenParams, seed: u64 },
-    Preset { preset: String, params: PresetParams },
+    Preset { preset: String, params: PresetParams, seed: u64 },
     Route { slave_unit: u8, connection_kind: String, src_fc: u8, src_addr: u16, count: u16 },
 }
 
@@ -204,6 +208,7 @@ pub fn parse_dynamic(reg: &SimRegister) -> Option<DynReg> {
         "device" => DynKind::Preset {
             preset: v.get("preset").and_then(|x| x.as_str()).unwrap_or("analog").to_string(),
             params: PresetParams { min: common.0, max: common.1, period_ms: common.2 },
+            seed,
         },
         "route" => DynKind::Route {
             slave_unit: v.get("slaveUnitId").and_then(|x| x.as_u64()).unwrap_or(1) as u8,
@@ -228,7 +233,7 @@ pub fn dyn_value(d: &DynReg, elapsed_ms: f64) -> f64 {
             // vary the random seed with time so successive ticks differ
             generator_value(kind, params, elapsed_ms, seed ^ (elapsed_ms as u64))
         }
-        DynKind::Preset { preset, params } => preset_value(preset, params, elapsed_ms),
+        DynKind::Preset { preset, params, seed } => preset_value(preset, params, elapsed_ms, *seed),
         // Route registers are populated by the tick's routed network read
         // (Task 4), not by `dyn_value`; this arm only exists to keep the
         // match exhaustive.
@@ -427,6 +432,10 @@ impl<R: tauri::Runtime> ValuesSink for tauri::AppHandle<R> {
     }
 }
 
+/// Minimum interval between `simulator_values` pushes to the UI. Values still
+/// animate at each register's own interval; this only caps the display refresh.
+const EMIT_INTERVAL_MS: f64 = 100.0;
+
 #[derive(Default)]
 pub struct SimEngine {
     banks: Option<Banks>,
@@ -436,6 +445,11 @@ pub struct SimEngine {
     tick_shutdown: Option<oneshot::Sender<()>>,
     tick_handle: Option<JoinHandle<()>>,
     statuses: StatusMap,
+    // Live generator/route + rule lists the tick reads each iteration. Held
+    // behind a shared lock so mutations (add/edit/delete register, rule, or
+    // device) take effect immediately without a Stop/Start.
+    dynamics: Arc<Mutex<Vec<DynReg>>>,
+    rules: Arc<Mutex<Vec<RuleDef>>>,
 }
 
 impl SimEngine {
@@ -512,6 +526,22 @@ impl SimEngine {
         }
     }
 
+    /// Replace the live generator/route list the tick animates. Takes effect on
+    /// the next tick — no Stop/Start needed.
+    pub fn set_dynamics(&self, dynamics: Vec<DynReg>) {
+        if let Ok(mut g) = self.dynamics.lock() {
+            *g = dynamics;
+        }
+    }
+
+    /// Replace the live rule list the tick evaluates (sorted by priority).
+    pub fn set_rules(&self, mut rules: Vec<RuleDef>) {
+        rules.sort_by_key(|r| r.sort_order);
+        if let Ok(mut g) = self.rules.lock() {
+            *g = rules;
+        }
+    }
+
     pub async fn start<S: ValuesSink>(
         &mut self,
         app: S,
@@ -576,14 +606,25 @@ impl SimEngine {
         let statuses: StatusMap = Arc::new(Mutex::new(HashMap::new()));
         self.statuses = statuses.clone();
 
+        // Store the generator/rule lists behind shared locks so mutations while
+        // running take effect on the next tick (no Stop/Start).
+        let dynamics_arc: Arc<Mutex<Vec<DynReg>>> = Arc::new(Mutex::new(dynamics));
+        self.dynamics = dynamics_arc.clone();
+        let rules_arc: Arc<Mutex<Vec<RuleDef>>> = Arc::new(Mutex::new(rules));
+        self.rules = rules_arc.clone();
+
         let (tick_tx, mut tick_rx) = oneshot::channel::<()>();
         let tick_banks = banks.clone();
         let tick_statuses = statuses.clone();
         let tick_writes = writes.clone();
+        let tick_dynamics = dynamics_arc.clone();
+        let tick_rules = rules_arc.clone();
         let tick_handle = tokio::spawn(async move {
             let mut ticker = tokio::time::interval(Duration::from_millis(tick_ms.max(10)));
             let start = std::time::Instant::now();
-            let mut next_due: Vec<f64> = vec![0.0; dynamics.len()];
+            // Per-register next-due time keyed by (unit, bank, address) so the
+            // list can change under us (add/remove) without misaligning timing.
+            let mut next_due: HashMap<(u8, u8, u16), f64> = HashMap::new();
             let mut last_emit = 0.0f64;
             let mut rule_states: HashMap<i64, RuleState> = HashMap::new();
             loop {
@@ -591,14 +632,19 @@ impl SimEngine {
                     _ = &mut tick_rx => break,
                     _ = ticker.tick() => {
                         let elapsed = start.elapsed().as_millis() as f64;
+                        // Read the live config under a short lock, cloned so the
+                        // lock is never held across the route-read `.await` below.
+                        let dynamics: Vec<DynReg> = tick_dynamics.lock().map(|g| g.clone()).unwrap_or_default();
+                        let rules: Vec<RuleDef> = tick_rules.lock().map(|g| g.clone()).unwrap_or_default();
                         // Collect updates WITHOUT holding the banks lock: route
                         // reads await the network, generator/preset values are
                         // computed synchronously. The std write lock is taken
                         // once below, after every `.await` has resolved.
                         let mut updates: Vec<(u8, u8, u16, Vec<u16>)> = Vec::new();
-                        for (i, d) in dynamics.iter().enumerate() {
-                            if elapsed < next_due[i] { continue; }
-                            next_due[i] = elapsed + d.interval_ms;
+                        for d in dynamics.iter() {
+                            let key = (d.unit, d.bank, d.address);
+                            if elapsed < *next_due.get(&key).unwrap_or(&0.0) { continue; }
+                            next_due.insert(key, elapsed + d.interval_ms);
                             match &d.kind {
                                 DynKind::Generator { .. } | DynKind::Preset { .. } => {
                                     if let Ok(words) = encode_value(&d.data_type, &d.byte_order, dyn_value(d, elapsed)) {
@@ -643,7 +689,7 @@ impl SimEngine {
                                 apply_action(&mut guard, &a, elapsed as u64 ^ id as u64);
                             }
                         } // lock dropped before any await/emit
-                        if elapsed - last_emit >= 250.0 {
+                        if elapsed - last_emit >= EMIT_INTERVAL_MS {
                             last_emit = elapsed;
                             let rows = snapshot_rows(&tick_banks, &tick_statuses);
                             app.emit_values(SimValuesEvent { workspace: workspace.clone(), rows });
@@ -1354,6 +1400,7 @@ pub fn simulator_add_device(
     for reg in &regs {
         apply_to_running(&state, &ws, reg, false);
     }
+    refresh_running_config(&app, &state, &conn, &ws);
 
     Ok(device_id)
 }
@@ -1382,6 +1429,7 @@ pub fn simulator_delete_device(
     for reg in &children {
         apply_to_running(&state, &ws, reg, true);
     }
+    refresh_running_config(&app, &state, &conn, &ws);
     Ok(())
 }
 
@@ -1434,6 +1482,7 @@ pub fn simulator_rebase_device(
     for reg in &shifted {
         apply_to_running(&state, &ws, reg, false);
     }
+    refresh_running_config(&app, &state, &conn, &ws);
     Ok(())
 }
 
@@ -1911,6 +1960,7 @@ pub fn simulator_add_register(
     let conn = open_workspace_db(&app, &ws)?;
     let id = db_insert_register(&conn, &register).map_err(|e| e.to_string())?;
     apply_to_running(&state, &ws, &register, false);
+    refresh_running_config(&app, &state, &conn, &ws);
     Ok(id)
 }
 
@@ -1926,6 +1976,7 @@ pub fn simulator_update_register(
     let conn = open_workspace_db(&app, &ws)?;
     db_update_register(&conn, &register).map_err(|e| e.to_string())?;
     apply_to_running(&state, &ws, &register, false);
+    refresh_running_config(&app, &state, &conn, &ws);
     Ok(())
 }
 
@@ -1944,7 +1995,16 @@ pub fn simulator_delete_register(
     db_delete_register(&conn, id).map_err(|e| e.to_string())?;
     if let Some(reg) = existing {
         apply_to_running(&state, &ws, &reg, true);
+        // A device is just a grouping of its registers — once the last one is
+        // deleted, remove the now-empty device instead of leaving a phantom.
+        if let Some(device_id) = reg.device_instance_id {
+            let remaining = db_list_registers_for_device(&conn, device_id).map_err(|e| e.to_string())?;
+            if remaining.is_empty() {
+                db_delete_device(&conn, device_id).map_err(|e| e.to_string())?;
+            }
+        }
     }
+    refresh_running_config(&app, &state, &conn, &ws);
     Ok(())
 }
 
@@ -1955,22 +2015,43 @@ pub fn simulator_list_rules(app: tauri::AppHandle, name: String) -> Result<Vec<S
     db_list_rules(&conn).map_err(|e| e.to_string())
 }
 #[tauri::command]
-pub fn simulator_add_rule(app: tauri::AppHandle, name: String, rule: SimRule) -> Result<i64, String> {
+pub fn simulator_add_rule(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SimulatorState>,
+    name: String,
+    rule: SimRule,
+) -> Result<i64, String> {
     let ws = validate_workspace_name(&name)?;
     let conn = open_workspace_db(&app, &ws)?;
-    db_insert_rule(&conn, &rule).map_err(|e| e.to_string())
+    let id = db_insert_rule(&conn, &rule).map_err(|e| e.to_string())?;
+    refresh_running_config(&app, &state, &conn, &ws);
+    Ok(id)
 }
 #[tauri::command]
-pub fn simulator_update_rule(app: tauri::AppHandle, name: String, rule: SimRule) -> Result<(), String> {
+pub fn simulator_update_rule(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SimulatorState>,
+    name: String,
+    rule: SimRule,
+) -> Result<(), String> {
     let ws = validate_workspace_name(&name)?;
     let conn = open_workspace_db(&app, &ws)?;
-    db_update_rule(&conn, &rule).map_err(|e| e.to_string())
+    db_update_rule(&conn, &rule).map_err(|e| e.to_string())?;
+    refresh_running_config(&app, &state, &conn, &ws);
+    Ok(())
 }
 #[tauri::command]
-pub fn simulator_delete_rule(app: tauri::AppHandle, name: String, id: i64) -> Result<(), String> {
+pub fn simulator_delete_rule(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SimulatorState>,
+    name: String,
+    id: i64,
+) -> Result<(), String> {
     let ws = validate_workspace_name(&name)?;
     let conn = open_workspace_db(&app, &ws)?;
-    db_delete_rule(&conn, id).map_err(|e| e.to_string())
+    db_delete_rule(&conn, id).map_err(|e| e.to_string())?;
+    refresh_running_config(&app, &state, &conn, &ws);
+    Ok(())
 }
 
 fn apply_to_running(state: &tauri::State<'_, SimulatorState>, ws: &str, reg: &SimRegister, remove: bool) {
@@ -1993,13 +2074,47 @@ fn apply_to_running(state: &tauri::State<'_, SimulatorState>, ws: &str, reg: &Si
             };
             engine.apply_register_change(unit, bank, addr, word, bit);
         } else if let Some(d) = parse_dynamic(reg) {
-            // Device/generator: serve the full-width t=0 value. Animation
-            // resumes on the next Stop/Start (tick task holds its own copy
-            // of the dynamics list, built at start time).
+            // Device/generator: seed the full-width t=0 value immediately so
+            // there's no illegal-address gap before the next tick.
+            // `refresh_running_config` updates the tick's live list so it then
+            // animates without a Stop/Start.
             if let Ok(words) = encode_value(&d.data_type, &d.byte_order, dyn_value(&d, 0.0)) {
                 engine.apply_words(unit, bank, addr, &words);
             }
         }
+    }
+}
+
+/// Re-derive the live generator/route + rule lists from the DB and push them to
+/// a running engine so config edits take effect on the next tick (no Stop/Start).
+/// No-op when the workspace's simulator isn't running.
+fn refresh_running_config(
+    app: &tauri::AppHandle,
+    state: &tauri::State<'_, SimulatorState>,
+    conn: &Connection,
+    ws: &str,
+) {
+    let map = state.0.lock().unwrap();
+    let Some(engine) = map.get(ws) else { return };
+    if !engine.is_running() {
+        return;
+    }
+    if let Ok(regs) = db_list_registers(conn) {
+        let mut dynamics: Vec<DynReg> = regs.iter().filter_map(parse_dynamic).collect();
+        // Resolve each route register's on-wire source address, mirroring Start.
+        for d in dynamics.iter_mut() {
+            if let DynKind::Route { slave_unit, connection_kind, src_addr, .. } = &mut d.kind {
+                let (_id, offset) = crate::modbus::lookup_slave_id_and_address_offset(
+                    app, ws, *slave_unit as i64, connection_kind,
+                );
+                *src_addr = (*src_addr as i64 + offset).clamp(0, 65535) as u16;
+            }
+        }
+        engine.set_dynamics(dynamics);
+    }
+    if let Ok(rules_raw) = db_list_rules(conn) {
+        let rules: Vec<RuleDef> = rules_raw.iter().filter_map(parse_rule).collect();
+        engine.set_rules(rules);
     }
 }
 
@@ -2564,16 +2679,34 @@ mod tests {
         let p = PresetParams { min: 20.0, max: 30.0, period_ms: 60000.0 };
         for preset in ["temperature", "humidity", "pressure", "flow", "vibration", "analog"] {
             for t in [0.0, 1000.0, 30000.0, 59000.0] {
-                let v = preset_value(preset, &p, t);
-                assert!(v >= 20.0 && v <= 30.0, "{preset} out of range at {t}: {v}");
+                for seed in [0u64, 7, 12345] {
+                    let v = preset_value(preset, &p, t, seed);
+                    assert!(v >= 20.0 && v <= 30.0, "{preset} out of range at {t} seed {seed}: {v}");
+                }
             }
         }
     }
 
     #[test]
+    fn two_registers_with_same_preset_are_independent() {
+        // Regression: preset_value took no per-register seed, so two registers
+        // with identical params moved in lockstep (bug: Temperature & Humidity
+        // showing the same value). Different seeds must give different values.
+        let p = PresetParams { min: 0.0, max: 100.0, period_ms: 5000.0 };
+        let seed = |addr: i64| ((1u64) << 32) ^ (4u64 << 16) ^ (addr as u64);
+        let mut any_diff = false;
+        for t in [100.0, 800.0, 1700.0, 3300.0] {
+            let a = preset_value("temperature", &p, t, seed(0));
+            let b = preset_value("temperature", &p, t, seed(1));
+            if (a - b).abs() > 1e-6 { any_diff = true; }
+        }
+        assert!(any_diff, "two preset registers with the same params must not be identical");
+    }
+
+    #[test]
     fn discrete_is_binary() {
         let p = PresetParams { min: 0.0, max: 1.0, period_ms: 1000.0 };
-        let v = preset_value("discrete", &p, 100.0);
+        let v = preset_value("discrete", &p, 100.0, 0);
         assert!(v == 0.0 || v == 1.0);
     }
 
@@ -2584,20 +2717,20 @@ mod tests {
         // strictly rise between them (previously t=1000 & t=5000 both wrap to
         // 0, so the old assertion `b >= a` passed trivially without proving
         // the ramp actually rises within a period).
-        let a = preset_value("counter", &p, 500.0);
-        let b = preset_value("counter", &p, 600.0);
+        let a = preset_value("counter", &p, 500.0, 0);
+        let b = preset_value("counter", &p, 600.0, 0);
         assert!(b > a, "expected counter to rise within a period: a={a} b={b}");
 
         // Wrap check: a full period later, value returns to (approximately) min.
-        let wrapped = preset_value("counter", &p, 1500.0);
+        let wrapped = preset_value("counter", &p, 1500.0, 0);
         assert!((wrapped - a).abs() < 1e-6, "expected wrap back to same phase: a={a} wrapped={wrapped}");
     }
 
     #[test]
     fn preset_varies_over_time() {
         let p = PresetParams { min: 0.0, max: 100.0, period_ms: 10000.0 };
-        let a = preset_value("temperature", &p, 0.0);
-        let b = preset_value("temperature", &p, 2500.0);
+        let a = preset_value("temperature", &p, 0.0, 0);
+        let b = preset_value("temperature", &p, 2500.0, 0);
         assert!((a - b).abs() > 1e-6);
     }
 
@@ -2705,6 +2838,91 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         let later = client.read_input_registers(0, 2).await.unwrap().unwrap();
         assert_ne!(first, later, "generator value should change over ~300ms");
+        engine.stop().await;
+    }
+
+    #[tokio::test]
+    async fn two_random_registers_produce_independent_values() {
+        let mk = |addr: i64| SimRegister {
+            id: addr + 1, unit_id: 1, function_code: 4, address: addr, alias: "".into(),
+            data_type: "u16".into(), hold_value: 0, value_source: "generator".into(),
+            byte_order: "ABCD".into(),
+            source_params: "{\"kind\":\"random\",\"min\":0,\"max\":60000}".into(),
+            interval_ms: 20, sort_order: 0, device_instance_id: None, unit: None, display_format: None,
+        };
+        let (r0, r1) = (mk(0), mk(1));
+        let banks = registers_to_banks(&[r0.clone(), r1.clone()]);
+        let dynamics: Vec<DynReg> = [r0, r1].iter().filter_map(parse_dynamic).collect();
+        let mut engine = SimEngine::new();
+        let info = engine.start(NoopSink, "ws".into(), "127.0.0.1", 0, 20, banks, dynamics, Default::default(), Default::default(), Vec::new()).await.unwrap();
+        let addr: std::net::SocketAddr = info.bound.parse().unwrap();
+        let mut client = tokio_modbus::client::tcp::connect_slave(addr, tokio_modbus::prelude::Slave(1)).await.unwrap();
+        let mut differ = false;
+        for _ in 0..10 {
+            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+            let v = client.read_input_registers(0, 2).await.unwrap().unwrap();
+            if v[0] != v[1] { differ = true; break; }
+        }
+        engine.stop().await;
+        assert!(differ, "two independent random registers must not always share a value");
+    }
+
+    #[tokio::test]
+    async fn set_dynamics_animates_a_register_added_while_running() {
+        // Start with an EMPTY simulator, then add a generator via set_dynamics —
+        // the running tick must pick it up and start serving/animating it with
+        // no restart (this is the "next Start" fix + the live-values fix).
+        let mut engine = SimEngine::new();
+        let info = engine.start(NoopSink, "ws".into(), "127.0.0.1", 0, 50, HashMap::new(), Vec::new(), Default::default(), Default::default(), Vec::new()).await.unwrap();
+        let addr: std::net::SocketAddr = info.bound.parse().unwrap();
+        let mut client = tokio_modbus::client::tcp::connect_slave(addr, tokio_modbus::prelude::Slave(1)).await.unwrap();
+
+        // Before: address 0 doesn't exist → read is an exception.
+        assert!(client.read_input_registers(0, 2).await.unwrap().is_err(), "unconfigured address should be illegal");
+
+        let reg = SimRegister {
+            id: 1, unit_id: 1, function_code: 4, address: 0, alias: "".into(), data_type: "f32".into(),
+            hold_value: 0, value_source: "generator".into(), byte_order: "ABCD".into(),
+            source_params: "{\"kind\":\"ramp\",\"min\":0,\"max\":100,\"periodMs\":500}".into(),
+            interval_ms: 50, sort_order: 0, device_instance_id: None,
+            unit: None, display_format: None,
+        };
+        engine.set_dynamics([reg].iter().filter_map(parse_dynamic).collect());
+
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let first = client.read_input_registers(0, 2).await.unwrap().unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let later = client.read_input_registers(0, 2).await.unwrap().unwrap();
+        assert_ne!(first, later, "register added via set_dynamics should animate live");
+        engine.stop().await;
+    }
+
+    #[tokio::test]
+    async fn set_rules_applies_a_rule_added_while_running() {
+        // A hold register at 0; add an interval rule live that sets it to 42.
+        let reg = SimRegister {
+            id: 1, unit_id: 1, function_code: 3, address: 0, alias: "".into(), data_type: "u16".into(),
+            hold_value: 0, value_source: "hold".into(), byte_order: "ABCD".into(),
+            source_params: "{}".into(), interval_ms: 1000, sort_order: 0, device_instance_id: None,
+            unit: None, display_format: None,
+        };
+        let banks = registers_to_banks(&[reg]);
+        let mut engine = SimEngine::new();
+        let info = engine.start(NoopSink, "ws".into(), "127.0.0.1", 0, 50, banks, Vec::new(), Default::default(), Default::default(), Vec::new()).await.unwrap();
+        let addr: std::net::SocketAddr = info.bound.parse().unwrap();
+        let mut client = tokio_modbus::client::tcp::connect_slave(addr, tokio_modbus::prelude::Slave(1)).await.unwrap();
+        assert_eq!(client.read_holding_registers(0, 1).await.unwrap().unwrap(), vec![0]);
+
+        let rule = SimRule {
+            id: 1, name: "".into(), enabled: true,
+            trigger: "{\"type\":\"interval\",\"ms\":10}".into(),
+            actions: "[{\"type\":\"set\",\"unit\":1,\"bank\":3,\"address\":0,\"value\":42}]".into(),
+            sort_order: 0,
+        };
+        engine.set_rules([rule].iter().filter_map(parse_rule).collect());
+
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        assert_eq!(client.read_holding_registers(0, 1).await.unwrap().unwrap(), vec![42], "rule added via set_rules should fire live");
         engine.stop().await;
     }
 

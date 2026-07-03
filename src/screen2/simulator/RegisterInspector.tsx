@@ -163,11 +163,6 @@ export default function RegisterInspector(props: RegisterInspectorProps) {
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <span className="truncate font-bold text-slate-900 dark:text-slate-100">{reg.alias}</span>
-              {device ? (
-                <span className="inline-block shrink-0 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-800 dark:text-emerald-200">
-                  {device.enabled === false ? "Disabled" : "Enabled"}
-                </span>
-              ) : null}
             </div>
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
               Unit {reg.unitId} · {FC_LABEL[reg.functionCode] ?? reg.functionCode} · {reg.address}

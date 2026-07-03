@@ -5,6 +5,7 @@ import type { Screen2OutletContext } from "../Screen2Layout";
 import AddDeviceModal from "../components/AddDeviceModal";
 import SimRegisterModal, { type SimRegister } from "../components/SimRegisterModal";
 import SimRuleModal, { type SimRule } from "../components/SimRuleModal";
+import ConfirmDialog from "../simulator/ConfirmDialog";
 import DevicesTab from "../simulator/DevicesTab";
 import LiveValuesTab from "../simulator/LiveValuesTab";
 import PromptDialog from "../simulator/PromptDialog";
@@ -40,6 +41,7 @@ export default function TcpSimulatorPage() {
   const [ruleModalOpen, setRuleModalOpen] = useState(false);
   const [modalRule, setModalRule] = useState<SimRule | null>(null);
   const [deviceEdit, setDeviceEdit] = useState<{ kind: "rename" | "rebase"; device: SimDevice } | null>(null);
+  const [confirmDeleteDevice, setConfirmDeleteDevice] = useState<SimDevice | null>(null);
 
   const changeTab = useCallback((tab: TabKey) => { setActiveTab(tab); writeTab(ws, tab); }, [ws]);
   const changeAddrFmt = useCallback((f: AddressFormat) => { setAddrFmt(f); writeAddressFormat(ws, f); }, [ws]);
@@ -129,10 +131,9 @@ export default function TcpSimulatorPage() {
               devices={sim.devices}
               registers={sim.registers}
               onAddDevice={() => setDeviceModalOpen(true)}
-              onToggleEnabled={(device, enabled) => void sim.updateDevice({ ...device, enabled })}
               onRename={handleRename}
               onRebase={handleRebase}
-              onDelete={(device) => void sim.deleteDevice(device.id)}
+              onDelete={(device) => setConfirmDeleteDevice(device)}
             />
           ) : null}
 
@@ -208,6 +209,22 @@ export default function TcpSimulatorPage() {
         validate={(v) => (v.trim() === "" ? "Name can't be empty" : null)}
         onSubmit={(v) => { if (deviceEdit) void sim.renameDevice(deviceEdit.device, v.trim()); setDeviceEdit(null); }}
         onClose={() => setDeviceEdit(null)}
+      />
+
+      <ConfirmDialog
+        open={confirmDeleteDevice !== null}
+        title="Delete device?"
+        message={
+          confirmDeleteDevice
+            ? `Delete "${confirmDeleteDevice.name}" and all ${sim.registers.filter((r) => r.deviceInstanceId === confirmDeleteDevice.id).length} of its registers? This can't be undone.`
+            : ""
+        }
+        confirmLabel="Delete device"
+        onConfirm={() => {
+          if (confirmDeleteDevice) void sim.deleteDevice(confirmDeleteDevice.id);
+          setConfirmDeleteDevice(null);
+        }}
+        onClose={() => setConfirmDeleteDevice(null)}
       />
 
       <PromptDialog

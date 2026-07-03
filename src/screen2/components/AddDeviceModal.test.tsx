@@ -37,4 +37,18 @@ describe("AddDeviceModal wizard", () => {
     render(<AddDeviceModal open templates={T} onClose={vi.fn()} onSubmit={vi.fn()} />);
     expect(screen.getByRole("button", { name: /next/i })).toBeDisabled();
   });
+  it("prefills the device name from the template", () => {
+    render(<AddDeviceModal open templates={T} onClose={vi.fn()} onSubmit={vi.fn()} />);
+    fireEvent.click(screen.getByText("Temp/Humidity"));
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    expect((screen.getByLabelText(/device name/i) as HTMLInputElement).value).toBe("Temp/Humidity");
+  });
+  it("blocks Next in configure when the name is cleared", () => {
+    render(<AddDeviceModal open templates={T} onClose={vi.fn()} onSubmit={vi.fn()} />);
+    fireEvent.click(screen.getByText("Temp/Humidity"));
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    fireEvent.change(screen.getByLabelText(/device name/i), { target: { value: "" } });
+    expect(screen.getByRole("button", { name: /next/i })).toBeDisabled();
+    expect(screen.getByText(/device name is required/i)).toBeInTheDocument();
+  });
 });
