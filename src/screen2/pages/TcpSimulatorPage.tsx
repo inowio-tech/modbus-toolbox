@@ -1,11 +1,12 @@
 import { useCallback, useMemo, useState } from "react";
-import { FiX } from "react-icons/fi";
+import { FiDownload, FiUpload, FiX } from "react-icons/fi";
 import { useOutletContext } from "react-router-dom";
 
 import type { Screen2OutletContext } from "../Screen2Layout";
 import AddDeviceModal from "../components/AddDeviceModal";
 import SimRegisterModal, { type SimRegister } from "../components/SimRegisterModal";
 import SimRuleModal, { type SimRule } from "../components/SimRuleModal";
+import ActivityTab from "../simulator/ActivityTab";
 import ConfirmDialog from "../simulator/ConfirmDialog";
 import DevicesTab from "../simulator/DevicesTab";
 import LiveValuesTab from "../simulator/LiveValuesTab";
@@ -23,7 +24,7 @@ import { readAddressFormat, writeAddressFormat, type AddressFormat } from "../ut
 const TAB_KEY = (ws: string) => `sim.tab.${ws}`;
 function readTab(ws: string): TabKey {
   const v = window.localStorage.getItem(TAB_KEY(ws));
-  return v === "devices" || v === "rules" || v === "live" ? v : "registers";
+  return v === "devices" || v === "rules" || v === "live" || v === "activity" ? v : "registers";
 }
 function writeTab(ws: string, tab: TabKey) {
   try { window.localStorage.setItem(TAB_KEY(ws), tab); } catch { /* ignore */ }
@@ -63,6 +64,7 @@ export default function TcpSimulatorPage() {
   const [deviceEdit, setDeviceEdit] = useState<{ kind: "rename" | "rebase"; device: SimDevice } | null>(null);
   const [confirmDeleteDevice, setConfirmDeleteDevice] = useState<SimDevice | null>(null);
   const [confirmDeleteRegister, setConfirmDeleteRegister] = useState<PageRegister | null>(null);
+  const [saveTemplateDevice, setSaveTemplateDevice] = useState<SimDevice | null>(null);
 
   const changeTab = useCallback((tab: TabKey) => { setActiveTab(tab); writeTab(ws, tab); }, [ws]);
   const changeAddrFmt = useCallback((f: AddressFormat) => { setAddrFmt(f); writeAddressFormat(ws, f); }, [ws]);
@@ -92,6 +94,16 @@ export default function TcpSimulatorPage() {
   const handleRename = useCallback((device: SimDevice) => setDeviceEdit({ kind: "rename", device }), []);
   const handleRebase = useCallback((device: SimDevice) => setDeviceEdit({ kind: "rebase", device }), []);
 
+  const handleExportProfile = useCallback(() => { void sim.exportProfile(); }, [sim]);
+
+  const handleImportProfile = useCallback(() => {
+    if (sim.status.running) {
+      sim.setError("Stop the simulator before importing a profile.");
+      return;
+    }
+    void sim.importProfile();
+  }, [sim]);
+
   const counts: Partial<Record<TabKey, number>> = {
     registers: sim.registers.length,
     devices: sim.devices.length,
@@ -100,9 +112,27 @@ export default function TcpSimulatorPage() {
 
   return (
     <div className="flex min-h-full flex-1 flex-col gap-4 px-3 sm:px-0">
-      <div>
-        <p className="text-sm font-semibold uppercase tracking-[0.35em] text-emerald-700 dark:font-normal dark:text-emerald-300">TCP Simulator</p>
-        <div className="mt-2 text-sm text-slate-600 dark:text-slate-300">Expose devices (including TCP & RTU) and registers as a Modbus TCP server for external clients.</div>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold uppercase tracking-[0.35em] text-emerald-700 dark:font-normal dark:text-emerald-300">TCP Simulator</p>
+          <div className="mt-2 text-sm text-slate-600 dark:text-slate-300">Expose devices (including TCP & RTU) and registers as a Modbus TCP server for external clients.</div>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void handleExportProfile()}
+            className="inline-flex items-center gap-1.5 rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:border-slate-400 dark:border-slate-700 dark:bg-white/5 dark:text-slate-200"
+          >
+            <FiUpload className="h-3.5 w-3.5" aria-hidden="true" /> Export Profile
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleImportProfile()}
+            className="inline-flex items-center gap-1.5 rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:border-slate-400 dark:border-slate-700 dark:bg-white/5 dark:text-slate-200"
+          >
+            <FiDownload className="h-3.5 w-3.5" aria-hidden="true" /> Import Profile
+          </button>
+        </div>
       </div>
 
       {sim.error ? (
@@ -164,6 +194,7 @@ export default function TcpSimulatorPage() {
               onRename={handleRename}
               onRebase={handleRebase}
               onDelete={(device) => setConfirmDeleteDevice(device)}
+              onSaveAsTemplate={(device) => setSaveTemplateDevice(device)}
             />
           ) : null}
 
@@ -180,6 +211,10 @@ export default function TcpSimulatorPage() {
 
           {activeTab === "live" ? (
             <LiveValuesTab registers={sim.registers} snapshotFor={sim.snapshotFor} status={sim.status} />
+          ) : null}
+
+          {activeTab === "activity" ? (
+            <ActivityTab status={sim.status} events={sim.events} />
           ) : null}
         </div>
 
@@ -277,6 +312,21 @@ export default function TcpSimulatorPage() {
           setConfirmDeleteRegister(null);
         }}
         onClose={() => setConfirmDeleteRegister(null)}
+      />
+
+      <PromptDialog
+        open={saveTemplateDevice !== null}
+        title="Save device as template"
+        label="Template name"
+        initialValue={saveTemplateDevice?.name ?? ""}
+        hint="Saves this device's register layout as a reusable template in the Device Builder — available in every workspace's Add Device gallery."
+        submitLabel="Save template"
+        validate={(v) => (v.trim() === "" ? "Name is required" : null)}
+        onSubmit={(v) => {
+          if (saveTemplateDevice) void sim.saveDeviceAsTemplate(saveTemplateDevice.id, v.trim());
+          setSaveTemplateDevice(null);
+        }}
+        onClose={() => setSaveTemplateDevice(null)}
       />
 
       <PromptDialog

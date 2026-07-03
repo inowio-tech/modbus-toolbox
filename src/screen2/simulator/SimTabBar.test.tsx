@@ -13,11 +13,12 @@ describe("SimTabBar", () => {
     expect(onChange).toHaveBeenCalledWith("devices");
   });
 
-  it("renders a tablist with all four tabs", () => {
+  it("renders a tablist with all tabs", () => {
     render(<SimTabBar active="live" onChange={vi.fn()} />);
     expect(screen.getByRole("tablist")).toBeInTheDocument();
-    expect(screen.getAllByRole("tab")).toHaveLength(4);
+    expect(screen.getAllByRole("tab")).toHaveLength(5);
     expect(screen.getByRole("tab", { name: /live values/i })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: /activity/i })).toBeInTheDocument();
   });
 
   it("shows a count badge when provided", () => {

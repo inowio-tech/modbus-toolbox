@@ -1,4 +1,4 @@
-export type TabKey = "registers" | "devices" | "rules" | "live";
+export type TabKey = "registers" | "devices" | "rules" | "live" | "activity";
 
 type Props = {
   active: TabKey;
@@ -11,6 +11,7 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: "devices", label: "Devices" },
   { key: "rules", label: "Rules" },
   { key: "live", label: "Live Values" },
+  { key: "activity", label: "Activity" },
 ];
 
 export default function SimTabBar({ active, onChange, counts }: Props) {

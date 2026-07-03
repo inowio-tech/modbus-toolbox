@@ -16,8 +16,9 @@ use std::sync::{Arc, RwLock};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use serde::Serialize;
-use tauri::Emitter;
+use serde::{Deserialize, Serialize};
+use tauri::{Emitter, Manager};
+use tauri_plugin_dialog::DialogExt;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -387,23 +388,89 @@ type Banks = Arc<RwLock<HashMap<u8, SimBanks>>>;
 /// `None` in that case).
 type StatusMap = Arc<Mutex<HashMap<(u8, u8, u16), &'static str>>>;
 
+/// Wall-clock epoch milliseconds (for uptime + event/connection timestamps).
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// A currently-connected client, surfaced in the Clients list.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientInfo {
+    pub id: u64,
+    pub addr: String,
+    pub connected_at_ms: u64,
+}
+
+/// A logged simulator event (server lifecycle + client connect/disconnect).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SimEvent {
+    pub at_ms: u64,
+    /// `"started"` | `"stopped"` | `"clientConnected"` | `"clientDisconnected"`.
+    pub kind: String,
+    pub detail: String,
+}
+
+const MAX_EVENTS: usize = 200;
+
+/// Shared observability state: the live client registry + a bounded event ring,
+/// updated as clients connect/drop and the server starts/stops. Persists across
+/// Start/Stop cycles (the event ring is history) — cleared only of live clients
+/// on Stop.
+#[derive(Default)]
+struct ObserverInner {
+    clients: HashMap<u64, ClientInfo>,
+    events: std::collections::VecDeque<SimEvent>,
+    next_id: u64,
+}
+
+impl ObserverInner {
+    fn log(&mut self, kind: &str, detail: String) {
+        self.events.push_back(SimEvent { at_ms: now_ms(), kind: kind.to_string(), detail });
+        while self.events.len() > MAX_EVENTS {
+            self.events.pop_front();
+        }
+    }
+}
+
+type Observer = Arc<Mutex<ObserverInner>>;
+
 /// Wraps a `TcpStream` and increments/decrements the shared `clients` counter
-/// so that `SimEngine::client_count()` reflects active open connections.
+/// (so `SimEngine::client_count()` reflects active open connections) and
+/// registers/deregisters the connection in the `Observer` (Clients list + a
+/// connect/disconnect event).
 struct CountedStream {
     inner: tokio::net::TcpStream,
     clients: Arc<AtomicUsize>,
+    observer: Observer,
+    id: u64,
 }
 
 impl CountedStream {
-    fn new(inner: tokio::net::TcpStream, clients: Arc<AtomicUsize>) -> Self {
+    fn new(inner: tokio::net::TcpStream, clients: Arc<AtomicUsize>, observer: Observer, addr: SocketAddr) -> Self {
         clients.fetch_add(1, Ordering::Relaxed);
-        Self { inner, clients }
+        let mut id = 0;
+        if let Ok(mut o) = observer.lock() {
+            o.next_id += 1;
+            id = o.next_id;
+            o.clients.insert(id, ClientInfo { id, addr: addr.to_string(), connected_at_ms: now_ms() });
+            o.log("clientConnected", addr.to_string());
+        }
+        Self { inner, clients, observer, id }
     }
 }
 
 impl Drop for CountedStream {
     fn drop(&mut self) {
         self.clients.fetch_sub(1, Ordering::Relaxed);
+        if let Ok(mut o) = self.observer.lock() {
+            let addr = o.clients.remove(&self.id).map(|c| c.addr).unwrap_or_default();
+            o.log("clientDisconnected", addr);
+        }
     }
 }
 
@@ -571,6 +638,11 @@ pub struct SimEngine {
     // device) take effect immediately without a Stop/Start.
     dynamics: Arc<Mutex<Vec<DynReg>>>,
     rules: Arc<Mutex<Vec<RuleDef>>>,
+    // Observability: live client registry + event ring, and the wall-clock
+    // start time (for uptime). `observer` persists across Start/Stop so the
+    // event log is history; `started_at_ms` is set on Start, cleared on Stop.
+    observer: Observer,
+    started_at_ms: Option<u64>,
 }
 
 impl SimEngine {
@@ -584,6 +656,27 @@ impl SimEngine {
 
     pub fn client_count(&self) -> usize {
         self.clients.load(Ordering::Relaxed)
+    }
+
+    /// Currently-connected clients, oldest first.
+    pub fn client_list(&self) -> Vec<ClientInfo> {
+        let mut v: Vec<ClientInfo> = self
+            .observer
+            .lock()
+            .map(|o| o.clients.values().cloned().collect())
+            .unwrap_or_default();
+        v.sort_by_key(|c| c.connected_at_ms);
+        v
+    }
+
+    /// The event ring (oldest first).
+    pub fn events(&self) -> Vec<SimEvent> {
+        self.observer.lock().map(|o| o.events.iter().cloned().collect()).unwrap_or_default()
+    }
+
+    /// Wall-clock start time in epoch ms while running, else `None`.
+    pub fn started_at_ms(&self) -> Option<u64> {
+        self.started_at_ms
     }
 
     pub fn snapshot(&self) -> HashMap<u8, SimBanks> {
@@ -690,6 +783,11 @@ impl SimEngine {
         let banks: Banks = Arc::new(RwLock::new(initial));
         self.banks = Some(banks.clone());
         self.clients.store(0, Ordering::Relaxed);
+        self.started_at_ms = Some(now_ms());
+        if let Ok(mut o) = self.observer.lock() {
+            o.clients.clear();
+            o.log("started", bound.to_string());
+        }
 
         // Client-write events, pushed by `SimService::handle` on every
         // successful write and drained by the tick task each interval so
@@ -697,15 +795,17 @@ impl SimEngine {
         let writes: Arc<Mutex<Vec<(u8, u8, u16)>>> = Arc::new(Mutex::new(Vec::new()));
 
         let clients_arc = self.clients.clone();
+        let observer_arc = self.observer.clone();
         let service = SimService { banks: banks.clone(), clients: self.clients.clone(), writes: writes.clone() };
         let server = Server::new(listener);
         let new_service = move |_addr: SocketAddr| Ok(Some(service.clone()));
         let on_connected = move |stream, socket_addr| {
             let new_service = new_service.clone();
             let clients = clients_arc.clone();
+            let observer = observer_arc.clone();
             async move {
                 accept_tcp_connection(stream, socket_addr, new_service)
-                    .map(|opt| opt.map(|(svc, tcp)| (svc, CountedStream::new(tcp, clients))))
+                    .map(|opt| opt.map(|(svc, tcp)| (svc, CountedStream::new(tcp, clients, observer, socket_addr))))
             }
         };
         let on_error = |err| log::error!("simulator server error: {err}");
@@ -871,6 +971,13 @@ impl SimEngine {
         }
         self.banks = None;
         self.clients.store(0, Ordering::Relaxed);
+        self.started_at_ms = None;
+        // Connections are force-dropped above; clear the live registry (their
+        // Drop may not have run yet) and log the stop.
+        if let Ok(mut o) = self.observer.lock() {
+            o.clients.clear();
+            o.log("stopped", String::new());
+        }
     }
 }
 
@@ -1258,29 +1365,46 @@ pub fn db_list_registers_excluding_device(conn: &Connection, device_id: i64) -> 
 
 /// One register in a `DeviceTemplate`'s register map, relative to the
 /// device's `base_address` (absolute address = `base_address + offset`).
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct TemplateRegister {
     pub offset: u16,
     pub bank: u8,
+    #[serde(default = "default_u16")]
     pub data_type: String,
+    #[serde(default = "default_abcd")]
     pub byte_order: String,
+    #[serde(default = "default_hold")]
     pub value_source: String,
+    #[serde(default = "default_empty_obj")]
     pub source_params: String,
+    #[serde(default)]
     pub alias: String,
 }
 
+fn default_u16() -> String { "u16".into() }
+fn default_abcd() -> String { "ABCD".into() }
+fn default_hold() -> String { "hold".into() }
+fn default_empty_obj() -> String { "{}".into() }
+
 /// A built-in (or, in a later plan, custom) device register-map template.
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceTemplate {
     pub template_key: String,
     pub name: String,
+    #[serde(default = "default_custom_category")]
     pub category: String,
+    #[serde(default)]
     pub description: String,
+    #[serde(default = "default_device_icon")]
     pub icon: String,
+    #[serde(default)]
     pub registers: Vec<TemplateRegister>,
 }
+
+fn default_custom_category() -> String { "Custom".into() }
+fn default_device_icon() -> String { "📟".into() }
 
 fn treg(offset: u16, bank: u8, data_type: &str, byte_order: &str, value_source: &str, source_params: &str, alias: &str) -> TemplateRegister {
     TemplateRegister {
@@ -1392,9 +1516,215 @@ pub fn find_template(key: &str) -> Option<DeviceTemplate> {
     builtin_templates().into_iter().find(|t| t.template_key == key)
 }
 
+/// Path to the app-global custom device-template catalog (shared by every
+/// workspace). Community templates are imported/authored here.
+fn custom_templates_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create app data dir: {e}"))?;
+    Ok(dir.join("custom_device_templates.json"))
+}
+
+/// Read the custom template catalog (empty if the file is absent or invalid).
+fn read_custom_templates(app: &tauri::AppHandle) -> Vec<DeviceTemplate> {
+    let Ok(path) = custom_templates_path(app) else { return Vec::new() };
+    let Ok(text) = std::fs::read_to_string(&path) else { return Vec::new() };
+    serde_json::from_str(&text).unwrap_or_default()
+}
+
+fn write_custom_templates(app: &tauri::AppHandle, templates: &[DeviceTemplate]) -> Result<(), String> {
+    let path = custom_templates_path(app)?;
+    let json = serde_json::to_string_pretty(templates).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| format!("failed to write template catalog: {e}"))
+}
+
+/// Validate a template before it enters the catalog: keys/name present and
+/// every register well-formed (bank/type/order), reusing `validate_register`
+/// against a probe instance at base 0.
+fn validate_template(t: &DeviceTemplate) -> Result<(), String> {
+    if t.template_key.trim().is_empty() {
+        return Err("template key is required".into());
+    }
+    if t.name.trim().is_empty() {
+        return Err("template name is required".into());
+    }
+    for r in &t.registers {
+        let probe = SimRegister {
+            id: 0,
+            unit_id: 1,
+            function_code: r.bank as i64,
+            address: r.offset as i64,
+            alias: r.alias.clone(),
+            data_type: r.data_type.clone(),
+            hold_value: 0,
+            sort_order: 0,
+            device_instance_id: None,
+            value_source: r.value_source.clone(),
+            byte_order: r.byte_order.clone(),
+            source_params: r.source_params.clone(),
+            interval_ms: 1000,
+            unit: None,
+            display_format: None,
+        };
+        validate_register(&probe).map_err(|e| format!("register '{}': {e}", r.alias))?;
+    }
+    Ok(())
+}
+
+/// Merge built-in + custom templates, custom overriding a built-in with the
+/// same key (so a user can shadow a built-in). Built-in order is preserved;
+/// new custom templates are appended.
 #[tauri::command]
-pub fn simulator_list_device_templates() -> Result<Vec<DeviceTemplate>, String> {
-    Ok(builtin_templates())
+pub fn simulator_list_device_templates(app: tauri::AppHandle) -> Result<Vec<DeviceTemplate>, String> {
+    let custom = read_custom_templates(&app);
+    let mut out = builtin_templates();
+    for c in custom {
+        if let Some(existing) = out.iter_mut().find(|t| t.template_key == c.template_key) {
+            *existing = c;
+        } else {
+            out.push(c);
+        }
+    }
+    Ok(out)
+}
+
+/// Just the custom (user-authored) templates, for the Device Builder's library
+/// management (built-ins are read-only; customs can be edited/deleted).
+#[tauri::command]
+pub fn simulator_list_custom_templates(app: tauri::AppHandle) -> Result<Vec<DeviceTemplate>, String> {
+    Ok(read_custom_templates(&app))
+}
+
+/// Upsert a custom template (by `templateKey`) into the app-global catalog.
+#[tauri::command]
+pub fn simulator_save_custom_template(app: tauri::AppHandle, template: DeviceTemplate) -> Result<(), String> {
+    validate_template(&template)?;
+    // Don't let a custom template shadow a built-in with a reserved key by accident.
+    if builtin_templates().iter().any(|b| b.template_key == template.template_key) {
+        return Err(format!("'{}' is a built-in template key; choose a different key", template.template_key));
+    }
+    let mut custom = read_custom_templates(&app);
+    if let Some(existing) = custom.iter_mut().find(|t| t.template_key == template.template_key) {
+        *existing = template;
+    } else {
+        custom.push(template);
+    }
+    write_custom_templates(&app, &custom)
+}
+
+/// Delete a custom template from the catalog by key.
+#[tauri::command]
+pub fn simulator_delete_custom_template(app: tauri::AppHandle, template_key: String) -> Result<(), String> {
+    let mut custom = read_custom_templates(&app);
+    let before = custom.len();
+    custom.retain(|t| t.template_key != template_key);
+    if custom.len() == before {
+        return Err(format!("no custom template '{template_key}'"));
+    }
+    write_custom_templates(&app, &custom)
+}
+
+/// Import a shared template `.json` file into the catalog (community sharing)
+/// via a native open dialog (Rust backend). Returns the imported template, or
+/// `None` if the dialog was cancelled.
+#[tauri::command]
+pub async fn simulator_import_custom_template(app: tauri::AppHandle) -> Result<Option<DeviceTemplate>, String> {
+    let Some(file) = app
+        .dialog()
+        .file()
+        .add_filter("Device Template", &["json"])
+        .blocking_pick_file()
+    else {
+        return Ok(None);
+    };
+    let path = file.into_path().map_err(|e| e.to_string())?;
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("failed to read file: {e}"))?;
+    let template: DeviceTemplate =
+        serde_json::from_str(&text).map_err(|e| format!("invalid template JSON: {e}"))?;
+    validate_template(&template)?;
+    if builtin_templates().iter().any(|b| b.template_key == template.template_key) {
+        return Err(format!("'{}' clashes with a built-in template key; rename it before importing", template.template_key));
+    }
+    let mut custom = read_custom_templates(&app);
+    if let Some(existing) = custom.iter_mut().find(|t| t.template_key == template.template_key) {
+        *existing = template.clone();
+    } else {
+        custom.push(template.clone());
+    }
+    write_custom_templates(&app, &custom)?;
+    Ok(Some(template))
+}
+
+/// Export any template (built-in or custom) to a shareable `.json` file via a
+/// native save dialog (Rust backend). Returns `true` if saved, `false` if
+/// cancelled.
+#[tauri::command]
+pub async fn simulator_export_template(app: tauri::AppHandle, template_key: String) -> Result<bool, String> {
+    let all = simulator_list_device_templates(app.clone())?;
+    let t = all
+        .into_iter()
+        .find(|t| t.template_key == template_key)
+        .ok_or_else(|| format!("no template '{template_key}'"))?;
+    let json = serde_json::to_string_pretty(&t).map_err(|e| e.to_string())?;
+    let Some(file) = app
+        .dialog()
+        .file()
+        .add_filter("Device Template", &["json"])
+        .set_file_name(format!("{template_key}.template.json"))
+        .blocking_save_file()
+    else {
+        return Ok(false);
+    };
+    let path = file.into_path().map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| format!("failed to write file: {e}"))?;
+    Ok(true)
+}
+
+/// Build a `DeviceTemplate` from a live workspace device — the "Save as
+/// template" bridge. Register offsets are made base-relative so the template
+/// can be re-instantiated anywhere. Not saved; the caller edits/saves it.
+#[tauri::command]
+pub fn simulator_device_to_template(
+    app: tauri::AppHandle,
+    name: String,
+    device_id: i64,
+    template_key: String,
+    template_name: String,
+    category: String,
+    icon: String,
+    description: String,
+) -> Result<DeviceTemplate, String> {
+    let ws = validate_workspace_name(&name)?;
+    let conn = open_workspace_db(&app, &ws)?;
+    let device = db_list_devices(&conn)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|d| d.id == device_id)
+        .ok_or_else(|| "device not found".to_string())?;
+    let regs = db_list_registers_for_device(&conn, device_id).map_err(|e| e.to_string())?;
+    let base = device.base_address;
+    let registers: Vec<TemplateRegister> = regs
+        .into_iter()
+        .map(|r| TemplateRegister {
+            offset: (r.address - base).max(0) as u16,
+            bank: r.function_code as u8,
+            data_type: r.data_type,
+            byte_order: r.byte_order,
+            value_source: r.value_source,
+            source_params: r.source_params,
+            alias: r.alias,
+        })
+        .collect();
+    Ok(DeviceTemplate {
+        template_key,
+        name: template_name,
+        category,
+        description,
+        icon,
+        registers,
+    })
 }
 
 /// Expand a `DeviceTemplate` into concrete `SimRegister`s for a device
@@ -1494,7 +1824,12 @@ pub fn simulator_add_device(
     if !(0..=65535).contains(&base_address) {
         return Err(format!("base address {} out of range (0-65535)", base_address));
     }
-    let t = find_template(&template_key).ok_or("unknown template")?;
+    // Include custom (app-global) templates, not just built-ins, so an imported
+    // community device can be instantiated.
+    let t = simulator_list_device_templates(app.clone())?
+        .into_iter()
+        .find(|t| t.template_key == template_key)
+        .ok_or("unknown template")?;
     let regs = template_to_registers(&t, unit_id, base_address);
 
     for reg in &regs {
@@ -2028,6 +2363,10 @@ pub struct SimStatus {
     pub running: bool,
     pub listen: Option<ListenInfo>,
     pub client_count: usize,
+    /// Wall-clock start time (epoch ms) while running, for the uptime display.
+    pub started_at_ms: Option<u64>,
+    /// Currently-connected clients (the Clients list).
+    pub clients: Vec<ClientInfo>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2408,8 +2747,14 @@ pub async fn simulator_start(
         rules,
     ).await;
     let status = match &result {
-        Ok(info) => SimStatus { running: true, listen: Some(info.clone()), client_count: engine.client_count() },
-        Err(_) => SimStatus { running: false, listen: None, client_count: 0 },
+        Ok(info) => SimStatus {
+            running: true,
+            listen: Some(info.clone()),
+            client_count: engine.client_count(),
+            started_at_ms: engine.started_at_ms(),
+            clients: engine.client_list(),
+        },
+        Err(_) => SimStatus { running: false, listen: None, client_count: 0, started_at_ms: None, clients: Vec::new() },
     };
     {
         let mut map = state.0.lock().unwrap();
@@ -2446,10 +2791,159 @@ pub fn simulator_status(state: tauri::State<'_, SimulatorState>, name: String) -
             running: true,
             listen: None,
             client_count: engine.client_count(),
+            started_at_ms: engine.started_at_ms(),
+            clients: engine.client_list(),
         },
-        _ => SimStatus { running: false, listen: None, client_count: 0 },
+        _ => SimStatus { running: false, listen: None, client_count: 0, started_at_ms: None, clients: Vec::new() },
     };
     Ok(status)
+}
+
+/// The simulator event log for a workspace (server lifecycle + client
+/// connect/disconnect), oldest first. Empty if the simulator has never run this
+/// session.
+#[tauri::command]
+pub fn simulator_events(state: tauri::State<'_, SimulatorState>, name: String) -> Result<Vec<SimEvent>, String> {
+    let ws = validate_workspace_name(&name)?;
+    let map = state.0.lock().unwrap();
+    Ok(map.get(&ws).map(|e| e.events()).unwrap_or_default())
+}
+
+/// A portable snapshot of a workspace's entire simulator setup — config +
+/// devices + registers + rules — for export/import (backup or move between
+/// workspaces). IDs are exported as-is and remapped on import.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SimProfile {
+    #[serde(default = "profile_version")]
+    pub version: u32,
+    pub config: SimConfig,
+    #[serde(default)]
+    pub devices: Vec<SimDevice>,
+    #[serde(default)]
+    pub registers: Vec<SimRegister>,
+    #[serde(default)]
+    pub rules: Vec<SimRule>,
+}
+
+fn profile_version() -> u32 { 1 }
+
+/// Gather the whole workspace simulator setup from the DB.
+fn build_profile(conn: &Connection) -> rusqlite::Result<SimProfile> {
+    Ok(SimProfile {
+        version: profile_version(),
+        config: db_get_config(conn)?,
+        devices: db_list_devices(conn)?,
+        registers: db_list_registers(conn)?,
+        rules: db_list_rules(conn)?,
+    })
+}
+
+/// Replace the DB's simulator setup with `profile`: validate every register,
+/// clear the existing config/devices/registers/rules, then repopulate with
+/// fresh IDs, remapping each register's `device_instance_id` to the device's
+/// new ID so device grouping survives the round-trip.
+fn apply_profile(conn: &Connection, profile: &SimProfile) -> Result<(), String> {
+    for reg in &profile.registers {
+        validate_register(reg)?;
+    }
+    for r in db_list_registers(conn).map_err(|e| e.to_string())? {
+        db_delete_register(conn, r.id).map_err(|e| e.to_string())?;
+    }
+    for d in db_list_devices(conn).map_err(|e| e.to_string())? {
+        db_delete_device(conn, d.id).map_err(|e| e.to_string())?;
+    }
+    for rl in db_list_rules(conn).map_err(|e| e.to_string())? {
+        db_delete_rule(conn, rl.id).map_err(|e| e.to_string())?;
+    }
+    db_set_config(conn, &profile.config).map_err(|e| e.to_string())?;
+    let mut id_map: HashMap<i64, i64> = HashMap::new();
+    for d in &profile.devices {
+        let mut nd = d.clone();
+        let old = nd.id;
+        nd.id = 0;
+        let new_id = db_insert_device(conn, &nd).map_err(|e| e.to_string())?;
+        id_map.insert(old, new_id);
+    }
+    for reg in &profile.registers {
+        let mut nr = reg.clone();
+        nr.id = 0;
+        // `db_insert_register` doesn't persist the device link, so set it with a
+        // follow-up UPDATE (the same two-step the device-add path uses).
+        let linked = reg.device_instance_id.and_then(|old| id_map.get(&old).copied());
+        nr.device_instance_id = linked;
+        let new_reg_id = db_insert_register(conn, &nr).map_err(|e| e.to_string())?;
+        if let Some(dev) = linked {
+            conn.execute(
+                "UPDATE sim_registers SET device_instance_id = ?1 WHERE id = ?2",
+                rusqlite::params![dev, new_reg_id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    for rule in &profile.rules {
+        let mut nrule = rule.clone();
+        nrule.id = 0;
+        db_insert_rule(conn, &nrule).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Export the whole workspace simulator setup to a JSON file. Opens a native
+/// save dialog (Rust backend) and writes the pretty JSON to the chosen path.
+/// Returns `true` if saved, `false` if the dialog was cancelled. `async` so it
+/// runs off the main thread (the blocking dialog dispatches to the UI thread).
+#[tauri::command]
+pub async fn simulator_export_profile(app: tauri::AppHandle, name: String) -> Result<bool, String> {
+    let ws = validate_workspace_name(&name)?;
+    let conn = open_workspace_db(&app, &ws)?;
+    let profile = build_profile(&conn).map_err(|e| e.to_string())?;
+    let json = serde_json::to_string_pretty(&profile).map_err(|e| e.to_string())?;
+    let Some(file) = app
+        .dialog()
+        .file()
+        .add_filter("Simulator Profile", &["json"])
+        .set_file_name(format!("{ws}-simulator.json"))
+        .blocking_save_file()
+    else {
+        return Ok(false);
+    };
+    let path = file.into_path().map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| format!("failed to write file: {e}"))?;
+    Ok(true)
+}
+
+/// Replace the workspace's simulator setup with a profile chosen via a native
+/// open dialog (Rust backend). Requires the simulator to be STOPPED. Returns
+/// `true` if imported, `false` if cancelled.
+#[tauri::command]
+pub async fn simulator_import_profile(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SimulatorState>,
+    name: String,
+) -> Result<bool, String> {
+    let ws = validate_workspace_name(&name)?;
+    {
+        let map = state.0.lock().unwrap();
+        if map.get(&ws).map(|e| e.is_running()).unwrap_or(false) {
+            return Err("Stop the simulator before importing a profile.".into());
+        }
+    }
+    let Some(file) = app
+        .dialog()
+        .file()
+        .add_filter("Simulator Profile", &["json"])
+        .blocking_pick_file()
+    else {
+        return Ok(false);
+    };
+    let path = file.into_path().map_err(|e| e.to_string())?;
+    let json = std::fs::read_to_string(&path).map_err(|e| format!("failed to read file: {e}"))?;
+    let profile: SimProfile =
+        serde_json::from_str(&json).map_err(|e| format!("invalid profile JSON: {e}"))?;
+    let conn = open_workspace_db(&app, &ws)?;
+    apply_profile(&conn, &profile)?;
+    Ok(true)
 }
 
 #[tauri::command]
@@ -2636,6 +3130,47 @@ mod tests {
         engine.stop().await;
     }
 
+    #[tokio::test]
+    async fn observer_tracks_clients_events_and_uptime() {
+        use std::time::Duration;
+        use tokio::time::sleep;
+
+        let mut engine = SimEngine::new();
+        assert!(engine.started_at_ms().is_none());
+        let info = engine.start(NoopSink, "ws".into(), "127.0.0.1", 0, 100, two_unit_banks(), Vec::new(), Default::default(), Default::default(), Vec::new()).await.unwrap();
+        let addr: std::net::SocketAddr = info.bound.parse().unwrap();
+        assert!(engine.started_at_ms().is_some(), "uptime start time set on Start");
+
+        let mut client = tokio_modbus::client::tcp::connect_slave(addr, Slave(1)).await.unwrap();
+        let _ = client.read_holding_registers(0, 1).await.unwrap().unwrap();
+
+        // Wait for the connection to register.
+        let mut list = Vec::new();
+        for _ in 0..20 {
+            list = engine.client_list();
+            if !list.is_empty() { break; }
+            sleep(Duration::from_millis(25)).await;
+        }
+        assert_eq!(list.len(), 1, "one client in the list");
+        assert!(!list[0].addr.is_empty(), "client addr recorded");
+
+        let events = engine.events();
+        assert!(events.iter().any(|e| e.kind == "started"), "started event logged");
+        assert!(events.iter().any(|e| e.kind == "clientConnected"), "connect event logged");
+
+        drop(client);
+        for _ in 0..20 {
+            if engine.client_list().is_empty() { break; }
+            sleep(Duration::from_millis(25)).await;
+        }
+        assert!(engine.client_list().is_empty(), "client removed on disconnect");
+        assert!(engine.events().iter().any(|e| e.kind == "clientDisconnected"), "disconnect event logged");
+
+        engine.stop().await;
+        assert!(engine.started_at_ms().is_none(), "uptime cleared on Stop");
+        assert!(engine.events().iter().any(|e| e.kind == "stopped"), "stopped event logged (history persists)");
+    }
+
     use crate::models::{SimConfig, SimDevice, SimRegister};
     use rusqlite::Connection;
 
@@ -2658,6 +3193,107 @@ mod tests {
         assert!(cfg.enabled);
         assert_eq!(cfg.port, 5502);
         assert_eq!(cfg.host, "127.0.0.1");
+    }
+
+    #[test]
+    fn profile_export_import_round_trips_and_remaps_device_ids() {
+        let c = mem_db();
+        // A device with two registers + a standalone register + a rule.
+        let dev_id = db_insert_device(&c, &SimDevice {
+            id: 0, template_key: "temp_humidity".into(), name: "Sensor".into(),
+            unit_id: 1, base_address: 0, enabled: true, sort_order: 0,
+        }).unwrap();
+        let reg = |addr: i64, alias: &str| SimRegister {
+            id: 0, unit_id: 1, function_code: 4, address: addr, alias: alias.into(),
+            data_type: "u16".into(), hold_value: 0, sort_order: 0, device_instance_id: None,
+            value_source: "device".into(), byte_order: "ABCD".into(),
+            source_params: "{\"preset\":\"temperature\"}".into(), interval_ms: 1000,
+            unit: None, display_format: None,
+        };
+        // Insert + link the device registers the way the device-add path does.
+        for addr in [0, 1] {
+            let rid = db_insert_register(&c, &reg(addr, "R")).unwrap();
+            c.execute("UPDATE sim_registers SET device_instance_id = ?1 WHERE id = ?2", rusqlite::params![dev_id, rid]).unwrap();
+        }
+        db_insert_register(&c, &SimRegister { value_source: "hold".into(), source_params: "{}".into(), ..reg(10, "Standalone") }).unwrap();
+        db_insert_rule(&c, &SimRule {
+            id: 0, name: "r".into(), enabled: true,
+            trigger: "{\"type\":\"interval\",\"ms\":1000}".into(),
+            actions: "[{\"type\":\"toggle\",\"unit\":1,\"bank\":1,\"address\":0}]".into(),
+            sort_order: 0,
+        }).unwrap();
+
+        // Export → JSON → import into a FRESH db.
+        let profile = build_profile(&c).unwrap();
+        let json = serde_json::to_string(&profile).unwrap();
+
+        let c2 = mem_db();
+        let parsed: SimProfile = serde_json::from_str(&json).unwrap();
+        apply_profile(&c2, &parsed).unwrap();
+
+        let devs = db_list_devices(&c2).unwrap();
+        assert_eq!(devs.len(), 1);
+        let new_dev_id = devs[0].id;
+        let regs = db_list_registers(&c2).unwrap();
+        assert_eq!(regs.len(), 3);
+        // The two device registers were relinked to the device's NEW id.
+        let linked = regs.iter().filter(|r| r.device_instance_id == Some(new_dev_id)).count();
+        assert_eq!(linked, 2, "both device registers relinked to the new device id");
+        // The standalone register stays unlinked.
+        assert_eq!(regs.iter().filter(|r| r.device_instance_id.is_none()).count(), 1);
+        assert_eq!(db_list_rules(&c2).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn validate_template_checks_keys_and_registers() {
+        let good = DeviceTemplate {
+            template_key: "custom_x".into(), name: "X".into(), category: "Custom".into(),
+            description: "".into(), icon: "📟".into(),
+            registers: vec![TemplateRegister {
+                offset: 0, bank: 4, data_type: "f32".into(), byte_order: "CDAB".into(),
+                value_source: "device".into(), source_params: "{\"preset\":\"analog\"}".into(), alias: "V".into(),
+            }],
+        };
+        assert!(validate_template(&good).is_ok());
+        // Missing key.
+        assert!(validate_template(&DeviceTemplate { template_key: "".into(), ..good.clone() }).is_err());
+        // Bad register (u128 type).
+        let bad_reg = DeviceTemplate {
+            registers: vec![TemplateRegister { data_type: "u128".into(), ..good.registers[0].clone() }],
+            ..good.clone()
+        };
+        assert!(validate_template(&bad_reg).is_err());
+    }
+
+    #[test]
+    fn template_deserializes_with_defaults() {
+        // A shared/minimal template JSON fills in sensible defaults.
+        let t: DeviceTemplate = serde_json::from_str(
+            r#"{"templateKey":"k","name":"N","registers":[{"offset":0,"bank":3}]}"#,
+        ).unwrap();
+        assert_eq!(t.category, "Custom");
+        assert_eq!(t.icon, "📟");
+        assert_eq!(t.registers[0].data_type, "u16");
+        assert_eq!(t.registers[0].byte_order, "ABCD");
+        assert_eq!(t.registers[0].value_source, "hold");
+    }
+
+    #[test]
+    fn apply_profile_rejects_invalid_register() {
+        let c = mem_db();
+        let bad = SimProfile {
+            version: 1,
+            config: db_get_config(&c).unwrap(),
+            devices: Vec::new(),
+            registers: vec![SimRegister {
+                id: 0, unit_id: 1, function_code: 3, address: 0, alias: "".into(),
+                data_type: "u128".into(), hold_value: 0, sort_order: 0, device_instance_id: None,
+                value_source: "generator".into(), byte_order: "ABCD".into(), source_params: "{}".into(),
+                interval_ms: 1000, unit: None, display_format: None,
+            }],
+            rules: Vec::new(),
+        };
+        assert!(apply_profile(&c, &bad).is_err());
     }
 
     #[test]

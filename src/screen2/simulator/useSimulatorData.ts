@@ -8,7 +8,15 @@ import type { SimRule } from "../components/SimRuleModal";
 
 export type SimConfig = { enabled: boolean; host: string; port: number; tickMs: number };
 export type ListenInfo = { bound: string; port: number; addresses: string[] };
-export type SimStatus = { running: boolean; listen: ListenInfo | null; clientCount: number };
+export type ClientInfo = { id: number; addr: string; connectedAtMs: number };
+export type SimEvent = { atMs: number; kind: string; detail: string };
+export type SimStatus = {
+  running: boolean;
+  listen: ListenInfo | null;
+  clientCount: number;
+  startedAtMs?: number | null;
+  clients?: ClientInfo[];
+};
 export type SnapshotRow = { unitId: number; functionCode: number; address: number; valueWord: number | null; valueBit: boolean | null; sourceStatus?: string | null };
 export type SimDevice = { id: number; templateKey: string; name: string; unitId: number; baseAddress: number; enabled: boolean; sortOrder: number };
 export type PageRegister = SimRegister & { deviceInstanceId?: number | null };
@@ -29,6 +37,7 @@ export function useSimulatorData(ws: string) {
   const [status, setStatus] = useState<SimStatus>({ running: false, listen: null, clientCount: 0 });
   const [listen, setListen] = useState<ListenInfo | null>(null);
   const [snapshot, setSnapshot] = useState<SnapshotRow[]>([]);
+  const [events, setEvents] = useState<SimEvent[]>([]);
   const [deviceTemplates, setDeviceTemplates] = useState<DeviceTemplate[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -59,15 +68,18 @@ export function useSimulatorData(ws: string) {
 
   useEffect(() => { void reload(); }, [reload]);
 
-  // Poll status (client count) every 2s while running; live values arrive via the
-  // `simulator_values` push event (subscribed below) instead of polling.
+  // Poll status (client list) + events every 2s while running; live values arrive
+  // via the `simulator_values` push event (subscribed below) instead of polling.
   useEffect(() => {
     if (!status.running) { setSnapshot([]); return; }
     let cancelled = false;
     const tick = async () => {
       try {
-        const st = await invoke<SimStatus>("simulator_status", { name: ws });
-        if (!cancelled) setStatus(st);
+        const [st, evs] = await Promise.all([
+          invoke<SimStatus>("simulator_status", { name: ws }),
+          invoke<SimEvent[]>("simulator_events", { name: ws }),
+        ]);
+        if (!cancelled) { setStatus(st); setEvents(evs ?? []); }
       } catch { /* transient */ }
     };
     const id = window.setInterval(tick, 2000);
@@ -117,7 +129,13 @@ export function useSimulatorData(ws: string) {
 
   const stop = useCallback(async () => {
     setBusy(true); setError(null);
-    try { await invoke("simulator_stop", { name: ws }); setStatus({ running: false, listen: null, clientCount: 0 }); setListen(null); }
+    try {
+      await invoke("simulator_stop", { name: ws });
+      setStatus({ running: false, listen: null, clientCount: 0, startedAtMs: null, clients: [] });
+      setListen(null);
+      // Keep the event history visible after Stop (it includes the "stopped" line).
+      try { setEvents(await invoke<SimEvent[]>("simulator_events", { name: ws })); } catch { /* transient */ }
+    }
     catch (e) { setError(String(e)); }
     finally { setBusy(false); }
   }, [ws]);
@@ -202,6 +220,38 @@ export function useSimulatorData(ws: string) {
     catch (e) { setError(String(e)); }
   }, [ws, reload]);
 
+  // Export the whole workspace sim setup to a JSON file. The Rust backend opens
+  // the native save dialog and writes the file; returns true if saved.
+  const exportProfile = useCallback(async (): Promise<boolean> => {
+    try { return (await invoke<boolean>("simulator_export_profile", { name: ws })) === true; }
+    catch (e) { setError(String(e)); return false; }
+  }, [ws]);
+
+  // Replace the workspace sim setup from a JSON file chosen via the backend's
+  // native open dialog. Reloads on a successful import.
+  const importProfile = useCallback(async (): Promise<boolean> => {
+    try {
+      const ok = (await invoke<boolean>("simulator_import_profile", { name: ws })) === true;
+      if (ok) await reload();
+      return ok;
+    } catch (e) { setError(String(e)); return false; }
+  }, [ws, reload]);
+
+  // Promote a configured live device into the app-global template catalog so it
+  // can be reused/shared. Derives a key from the name; the user can refine it in
+  // the Device Builder. Returns true on success.
+  const saveDeviceAsTemplate = useCallback(async (deviceId: number, templateName: string): Promise<boolean> => {
+    try {
+      const slug = templateName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+      const template = await invoke<DeviceTemplate>("simulator_device_to_template", {
+        name: ws, deviceId, templateKey: `custom_${slug || "device"}`,
+        templateName: templateName.trim(), category: "Custom", icon: "📟", description: "",
+      });
+      await invoke("simulator_save_custom_template", { template });
+      return true;
+    } catch (e) { setError(String(e)); return false; }
+  }, [ws]);
+
   const snapshotFor = useCallback(
     (unitId: number, fc: number, address: number): SnapshotRow | undefined =>
       snapshot.find((s) => s.unitId === unitId && s.functionCode === fc && s.address === address),
@@ -209,12 +259,13 @@ export function useSimulatorData(ws: string) {
   );
 
   return {
-    config, registers, devices, rules, status, listen, snapshot,
+    config, registers, devices, rules, status, listen, snapshot, events,
     deviceTemplates, error, busy, lastUpdated,
     reload, saveConfig, start, stop,
     addRegister, updateRegister, deleteRegister, duplicateRegister,
     addDevice, updateDevice, deleteDevice, renameDevice, rebaseDevice,
     addRule, updateRule, deleteRule,
+    exportProfile, importProfile, saveDeviceAsTemplate,
     setError,
     snapshotFor,
   };

@@ -3,7 +3,7 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, Outlet, useNavigate, useParams } from "react-router-dom";
-import { FiActivity, FiBookOpen, FiGrid, FiInfo, FiLink, FiList, FiMaximize2, FiMinimize2, FiMenu, FiServer, FiX, FiRefreshCcw } from "react-icons/fi";
+import { FiActivity, FiBookOpen, FiBox, FiGrid, FiInfo, FiLink, FiList, FiMaximize2, FiMinimize2, FiMenu, FiServer, FiX, FiRefreshCcw } from "react-icons/fi";
 import { PiNetwork } from "react-icons/pi";
 import ThemeToggleButton from "../components/ThemeToggleButton";
 import { useErrorToast } from "../components/ToastProvider";
@@ -21,6 +21,16 @@ export type Workspace = {
   created_at: string;
   updated_at: string;
 };
+
+// Sidebar collapse preference persists app-wide across restarts (localStorage,
+// same convention as `inowio.theme`).
+const SIDEBAR_COLLAPSED_KEY = "inowio.sidebar.collapsed";
+function readSidebarCollapsed(): boolean {
+  try { return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1"; } catch { return false; }
+}
+function writeSidebarCollapsed(collapsed: boolean) {
+  try { window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "1" : "0"); } catch { /* ignore */ }
+}
 
 export type Screen2OutletContext = {
   workspace: Workspace;
@@ -46,7 +56,7 @@ export default function Screen2Layout() {
   const [navGuardOpen, setNavGuardOpen] = useState(false);
   const [pendingPath, setPendingPath] = useState<string | null>(null);
   const [pendingExit, setPendingExit] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed);
   const [logViewerOpen, setLogViewerOpen] = useState(false);
   const [logViewerFullscreen, setLogViewerFullscreen] = useState(false);
   const [logPaneHeight, setLogPaneHeight] = useState(288);
@@ -631,7 +641,7 @@ export default function Screen2Layout() {
               <button
                 type="button"
                 className="inline-flex items-center justify-center rounded-full border border-slate-200 bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-300 dark:border-slate-900 dark:bg-white/5 dark:text-slate-200 dark:hover:border-slate-700"
-                onClick={() => setSidebarCollapsed((v) => !v)}
+                onClick={() => setSidebarCollapsed((v) => { const next = !v; writeSidebarCollapsed(next); return next; })}
                 title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
               >
                 {sidebarCollapsed ? (
@@ -730,6 +740,24 @@ export default function Screen2Layout() {
             >
               <FiServer className="h-4 w-4" aria-hidden="true" />
               <span className={`truncate ${sidebarCollapsed ? "lg:hidden" : "inline"}`}>TCP Simulator</span>
+            </NavLink>
+
+            <NavLink
+              className={({ isActive }) =>
+                `flex items-center gap-3 rounded-2xl border px-3 py-2 text-sm font-semibold no-underline transition ${isActive
+                  ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-800 dark:text-emerald-100"
+                  : "border-slate-200 bg-white text-slate-700 hover:border-slate-300 dark:border-slate-800 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-700"
+                }`
+              }
+              to={`/app/${encodeURIComponent(workspaceName)}/device-builder`}
+              title={`${sidebarCollapsed ? "Device Builder" : ""}`}
+              onClick={(e) => {
+                e.preventDefault();
+                guardedNavigate(`/app/${encodeURIComponent(workspaceName)}/device-builder`);
+              }}
+            >
+              <FiBox className="h-4 w-4" aria-hidden="true" />
+              <span className={`truncate ${sidebarCollapsed ? "lg:hidden" : "inline"}`}>Device Builder</span>
             </NavLink>
 
             <NavLink

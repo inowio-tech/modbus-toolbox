@@ -10,6 +10,7 @@ const base = () => ({
   onRename: vi.fn(),
   onRebase: vi.fn(),
   onDelete: vi.fn(),
+  onSaveAsTemplate: vi.fn(),
 });
 
 describe("DevicesTab", () => {

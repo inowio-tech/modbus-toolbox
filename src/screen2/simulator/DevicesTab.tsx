@@ -19,6 +19,7 @@ export type DevicesTabProps = {
   onRename: (device: SimDevice) => void;
   onRebase: (device: SimDevice) => void;
   onDelete: (device: SimDevice) => void;
+  onSaveAsTemplate: (device: SimDevice) => void;
 };
 
 const TEMPLATE_ICON: Record<string, string> = {
@@ -39,6 +40,7 @@ export default function DevicesTab({
   onRename,
   onRebase,
   onDelete,
+  onSaveAsTemplate,
 }: DevicesTabProps) {
   const [openMenuId, setOpenMenuId] = useState<number | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -127,6 +129,14 @@ export default function DevicesTab({
                           className="block w-full px-3 py-1.5 text-left hover:bg-slate-100 dark:hover:bg-white/5"
                         >
                           Re-base
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => { setOpenMenuId(null); onSaveAsTemplate(d); }}
+                          className="block w-full px-3 py-1.5 text-left hover:bg-slate-100 dark:hover:bg-white/5"
+                        >
+                          Save as template
                         </button>
                         <button
                           type="button"
