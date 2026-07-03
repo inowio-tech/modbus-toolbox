@@ -24,6 +24,9 @@ All notable changes to this project are tracked here following [Keep a Changelog
   built-in catalog; its registers are grouped under the device and can be
   re-based or removed as a unit.
 
+### Changed
+- TCP Simulator: redesigned into a tabbed workspace (Registers, Devices, Rules, Live Values) with a status dashboard, search/filter/pagination, a 3-step Add-Device wizard, and a right-hand register inspector (live sparkline, Duplicate, persisted Unit/Display Format).
+
 ## [0.3.2] - 2026-06-19
 ### Fixed
 - RTU connect no longer fails with "modbus probe exception: Illegal data

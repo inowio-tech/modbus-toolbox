@@ -13,6 +13,8 @@ export type SimRegister = {
   byteOrder: string;
   sourceParams: string;
   intervalMs: number;
+  unit?: string | null;
+  displayFormat?: string | null;
 };
 
 const EMPTY: SimRegister = {
@@ -28,6 +30,8 @@ const EMPTY: SimRegister = {
   byteOrder: "ABCD",
   sourceParams: "{}",
   intervalMs: 1000,
+  unit: null,
+  displayFormat: null,
 };
 
 const DEVICE_PRESETS = ["temperature", "humidity", "pressure", "flow", "vibration", "analog", "discrete", "counter"];

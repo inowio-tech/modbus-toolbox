@@ -193,6 +193,7 @@ pub(crate) fn ensure_workspace_db(workspace_folder: &PathBuf, db_file: &str) -> 
             data_type TEXT NOT NULL DEFAULT 'u16',
             byte_order TEXT,
             display_format TEXT,
+            unit TEXT,
             value_source TEXT NOT NULL DEFAULT 'hold',
             source_params TEXT,
             interval_ms INTEGER,
@@ -212,6 +213,13 @@ pub(crate) fn ensure_workspace_db(workspace_folder: &PathBuf, db_file: &str) -> 
         COMMIT;",
     )
     .map_err(|e| format!("failed to initialize workspace db schema: {e}"))?;
+
+    // Idempotent dev-DB migration: older workspace DBs were created before
+    // `unit`/`display_format` existed on `sim_registers`. Ignore the error
+    // when the column is already present.
+    for col in ["unit TEXT", "display_format TEXT"] {
+        let _ = conn.execute(&format!("ALTER TABLE sim_registers ADD COLUMN {col}"), []);
+    }
 
     conn.execute(
         "INSERT OR IGNORE INTO settings_connection (

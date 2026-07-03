@@ -823,6 +823,7 @@ pub fn create_sim_schema(conn: &Connection) -> rusqlite::Result<()> {
             data_type TEXT NOT NULL DEFAULT 'u16',
             byte_order TEXT,
             display_format TEXT,
+            unit TEXT,
             value_source TEXT NOT NULL DEFAULT 'hold',
             source_params TEXT,
             interval_ms INTEGER,
@@ -883,7 +884,8 @@ pub fn db_list_registers(conn: &Connection) -> rusqlite::Result<Vec<SimRegister>
     let mut stmt = conn.prepare(
         "SELECT id, unit_id, function_code, address, alias, data_type, hold_value, sort_order,
                 COALESCE(value_source,'hold'), COALESCE(byte_order,'ABCD'),
-                COALESCE(source_params,'{}'), COALESCE(interval_ms,1000), device_instance_id
+                COALESCE(source_params,'{}'), COALESCE(interval_ms,1000), device_instance_id,
+                unit, display_format
          FROM sim_registers ORDER BY unit_id, function_code, address",
     )?;
     let rows = stmt.query_map([], |r| Ok(SimRegister {
@@ -900,6 +902,8 @@ pub fn db_list_registers(conn: &Connection) -> rusqlite::Result<Vec<SimRegister>
         source_params: r.get(10)?,
         interval_ms: r.get(11)?,
         device_instance_id: r.get::<_, Option<i64>>(12)?,
+        unit: r.get::<_, Option<String>>(13)?,
+        display_format: r.get::<_, Option<String>>(14)?,
     }))?;
     rows.collect()
 }
@@ -908,12 +912,12 @@ pub fn db_insert_register(conn: &Connection, reg: &SimRegister) -> rusqlite::Res
     conn.execute(
         "INSERT INTO sim_registers
             (unit_id, function_code, address, alias, data_type, hold_value, sort_order,
-             value_source, byte_order, source_params, interval_ms)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+             value_source, byte_order, source_params, interval_ms, unit, display_format)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
         rusqlite::params![
             reg.unit_id, reg.function_code, reg.address, reg.alias, reg.data_type,
             reg.hold_value, reg.sort_order, reg.value_source, reg.byte_order,
-            reg.source_params, reg.interval_ms
+            reg.source_params, reg.interval_ms, reg.unit, reg.display_format
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -923,12 +927,13 @@ pub fn db_update_register(conn: &Connection, reg: &SimRegister) -> rusqlite::Res
     conn.execute(
         "UPDATE sim_registers SET
             unit_id=?2, function_code=?3, address=?4, alias=?5, data_type=?6, hold_value=?7,
-            sort_order=?8, value_source=?9, byte_order=?10, source_params=?11, interval_ms=?12
+            sort_order=?8, value_source=?9, byte_order=?10, source_params=?11, interval_ms=?12,
+            unit=?13, display_format=?14
          WHERE id=?1",
         rusqlite::params![
             reg.id, reg.unit_id, reg.function_code, reg.address, reg.alias, reg.data_type,
             reg.hold_value, reg.sort_order, reg.value_source, reg.byte_order,
-            reg.source_params, reg.interval_ms
+            reg.source_params, reg.interval_ms, reg.unit, reg.display_format
         ],
     )?;
     Ok(())
@@ -1006,7 +1011,8 @@ pub fn db_list_registers_for_device(conn: &Connection, device_id: i64) -> rusqli
     let mut stmt = conn.prepare(
         "SELECT id, unit_id, function_code, address, alias, data_type, hold_value, sort_order,
                 COALESCE(value_source,'hold'), COALESCE(byte_order,'ABCD'),
-                COALESCE(source_params,'{}'), COALESCE(interval_ms,1000), device_instance_id
+                COALESCE(source_params,'{}'), COALESCE(interval_ms,1000), device_instance_id,
+                unit, display_format
          FROM sim_registers WHERE device_instance_id = ?1 ORDER BY unit_id, function_code, address",
     )?;
     let rows = stmt.query_map([device_id], |r| Ok(SimRegister {
@@ -1023,6 +1029,8 @@ pub fn db_list_registers_for_device(conn: &Connection, device_id: i64) -> rusqli
         source_params: r.get(10)?,
         interval_ms: r.get(11)?,
         device_instance_id: r.get::<_, Option<i64>>(12)?,
+        unit: r.get::<_, Option<String>>(13)?,
+        display_format: r.get::<_, Option<String>>(14)?,
     }))?;
     rows.collect()
 }
@@ -1034,7 +1042,8 @@ pub fn db_list_registers_excluding_device(conn: &Connection, device_id: i64) -> 
     let mut stmt = conn.prepare(
         "SELECT id, unit_id, function_code, address, alias, data_type, hold_value, sort_order,
                 COALESCE(value_source,'hold'), COALESCE(byte_order,'ABCD'),
-                COALESCE(source_params,'{}'), COALESCE(interval_ms,1000), device_instance_id
+                COALESCE(source_params,'{}'), COALESCE(interval_ms,1000), device_instance_id,
+                unit, display_format
          FROM sim_registers WHERE device_instance_id IS NULL OR device_instance_id != ?1
          ORDER BY unit_id, function_code, address",
     )?;
@@ -1052,6 +1061,8 @@ pub fn db_list_registers_excluding_device(conn: &Connection, device_id: i64) -> 
         source_params: r.get(10)?,
         interval_ms: r.get(11)?,
         device_instance_id: r.get::<_, Option<i64>>(12)?,
+        unit: r.get::<_, Option<String>>(13)?,
+        display_format: r.get::<_, Option<String>>(14)?,
     }))?;
     rows.collect()
 }
@@ -1218,6 +1229,8 @@ pub fn template_to_registers(t: &DeviceTemplate, unit_id: i64, base: i64) -> Vec
             byte_order: r.byte_order.clone(),
             source_params: r.source_params.clone(),
             interval_ms: 1000,
+            unit: None,
+            display_format: None,
         })
         .collect()
 }
@@ -2274,6 +2287,7 @@ mod tests {
             alias: "Device addr".into(), data_type: "u16".into(), hold_value: 3, sort_order: 0,
             device_instance_id: None,
             value_source: "hold".into(), byte_order: "ABCD".into(), source_params: "{}".into(), interval_ms: 1000,
+            unit: None, display_format: None,
         }).unwrap();
         let mut rows = db_list_registers(&c).unwrap();
         assert_eq!(rows.len(), 1);
@@ -2296,6 +2310,7 @@ mod tests {
             value_source: "device".into(), byte_order: "CDAB".into(),
             source_params: "{\"preset\":\"temperature\",\"min\":20,\"max\":30}".into(),
             interval_ms: 500, sort_order: 0, device_instance_id: None,
+            unit: None, display_format: None,
         }).unwrap();
         let rows = db_list_registers(&c).unwrap();
         let r = rows.iter().find(|r| r.id == id).unwrap();
@@ -2419,9 +2434,9 @@ mod tests {
     #[test]
     fn builds_banks_grouped_by_unit_and_function() {
         let regs = vec![
-            SimRegister { id: 1, unit_id: 1, function_code: 3, address: 257, alias: "".into(), data_type: "u16".into(), hold_value: 3, sort_order: 0, device_instance_id: None, value_source: "hold".into(), byte_order: "ABCD".into(), source_params: "{}".into(), interval_ms: 1000 },
-            SimRegister { id: 2, unit_id: 1, function_code: 4, address: 1, alias: "".into(), data_type: "u16".into(), hold_value: 250, sort_order: 0, device_instance_id: None, value_source: "hold".into(), byte_order: "ABCD".into(), source_params: "{}".into(), interval_ms: 1000 },
-            SimRegister { id: 3, unit_id: 2, function_code: 1, address: 0, alias: "".into(), data_type: "bool".into(), hold_value: 1, sort_order: 0, device_instance_id: None, value_source: "hold".into(), byte_order: "ABCD".into(), source_params: "{}".into(), interval_ms: 1000 },
+            SimRegister { id: 1, unit_id: 1, function_code: 3, address: 257, alias: "".into(), data_type: "u16".into(), hold_value: 3, sort_order: 0, device_instance_id: None, value_source: "hold".into(), byte_order: "ABCD".into(), source_params: "{}".into(), interval_ms: 1000, unit: None, display_format: None },
+            SimRegister { id: 2, unit_id: 1, function_code: 4, address: 1, alias: "".into(), data_type: "u16".into(), hold_value: 250, sort_order: 0, device_instance_id: None, value_source: "hold".into(), byte_order: "ABCD".into(), source_params: "{}".into(), interval_ms: 1000, unit: None, display_format: None },
+            SimRegister { id: 3, unit_id: 2, function_code: 1, address: 0, alias: "".into(), data_type: "bool".into(), hold_value: 1, sort_order: 0, device_instance_id: None, value_source: "hold".into(), byte_order: "ABCD".into(), source_params: "{}".into(), interval_ms: 1000, unit: None, display_format: None },
         ];
         let banks = registers_to_banks(&regs);
         assert_eq!(banks.get(&1).unwrap().holding.get(&257), Some(&3));
@@ -2432,7 +2447,7 @@ mod tests {
     #[test]
     fn i16_negative_stored_as_twos_complement_word() {
         let regs = vec![
-            SimRegister { id: 1, unit_id: 1, function_code: 3, address: 0, alias: "".into(), data_type: "i16".into(), hold_value: -1, sort_order: 0, device_instance_id: None, value_source: "hold".into(), byte_order: "ABCD".into(), source_params: "{}".into(), interval_ms: 1000 },
+            SimRegister { id: 1, unit_id: 1, function_code: 3, address: 0, alias: "".into(), data_type: "i16".into(), hold_value: -1, sort_order: 0, device_instance_id: None, value_source: "hold".into(), byte_order: "ABCD".into(), source_params: "{}".into(), interval_ms: 1000, unit: None, display_format: None },
         ];
         let banks = registers_to_banks(&regs);
         assert_eq!(banks.get(&1).unwrap().holding.get(&0), Some(&0xFFFF));
@@ -2562,6 +2577,7 @@ mod tests {
             hold_value: 0, value_source: "generator".into(), byte_order: "ABCD".into(),
             source_params: "{\"kind\":\"sine\",\"min\":0,\"max\":100,\"periodMs\":1000}".into(),
             interval_ms: 100, sort_order: 0, device_instance_id: None,
+            unit: None, display_format: None,
         };
         let d = parse_dynamic(&gen).unwrap();
         assert_eq!(d.address, 0);
@@ -2578,6 +2594,7 @@ mod tests {
             hold_value: 0, value_source: "route".into(), byte_order: "ABCD".into(),
             source_params: "{\"slaveUnitId\":7,\"connectionKind\":\"tcp\",\"functionCode\":4,\"address\":1}".into(),
             interval_ms: 500, sort_order: 0, device_instance_id: None,
+            unit: None, display_format: None,
         };
         let d = parse_dynamic(&reg).unwrap();
         match d.kind {
@@ -2600,6 +2617,7 @@ mod tests {
             hold_value: 0, value_source: "generator".into(), byte_order: "ABCD".into(),
             source_params: "{\"kind\":\"ramp\",\"min\":0,\"max\":10,\"periodMs\":1000}".into(),
             interval_ms: 100, sort_order: 0, device_instance_id: None,
+            unit: None, display_format: None,
         };
         let banks = registers_to_banks(&[reg]);
         let h = &banks.get(&1).unwrap().holding;
@@ -2612,6 +2630,7 @@ mod tests {
             id: 0, unit_id: 1, function_code: 3, address: 0, alias: "".into(), data_type: "u32".into(),
             hold_value: 0, value_source: "generator".into(), byte_order: "CDAB".into(),
             source_params: "{}".into(), interval_ms: 100, sort_order: 0, device_instance_id: None,
+            unit: None, display_format: None,
         };
         assert!(validate_register(&ok).is_ok());
         let bad = SimRegister { data_type: "f64".into(), ..ok.clone() };
@@ -2624,6 +2643,7 @@ mod tests {
             id: 0, unit_id: 1, function_code: 1, address: 0, alias: "".into(), data_type: "bool".into(),
             hold_value: 0, value_source: "generator".into(), byte_order: "ABCD".into(),
             source_params: "{}".into(), interval_ms: 100, sort_order: 0, device_instance_id: None,
+            unit: None, display_format: None,
         };
         assert!(validate_register(&base).is_err());
         let device = SimRegister { value_source: "device".into(), ..base.clone() };
@@ -2640,6 +2660,7 @@ mod tests {
             hold_value: 0, value_source: "generator".into(), byte_order: "ABCD".into(),
             source_params: "{\"kind\":\"ramp\",\"min\":0,\"max\":100,\"periodMs\":1000}".into(),
             interval_ms: 50, sort_order: 0, device_instance_id: None,
+            unit: None, display_format: None,
         };
         let banks = registers_to_banks(&[reg.clone()]);
         let dynamics: Vec<DynReg> = [reg].iter().filter_map(parse_dynamic).collect();
@@ -2675,6 +2696,7 @@ mod tests {
             hold_value: 0, value_source: "generator".into(), byte_order: "ABCD".into(),
             source_params: "{\"kind\":\"ramp\",\"min\":0,\"max\":100,\"periodMs\":1000}".into(),
             interval_ms: 50, sort_order: 0, device_instance_id: None,
+            unit: None, display_format: None,
         };
         let banks = registers_to_banks(&[reg.clone()]);
         let dynamics: Vec<DynReg> = [reg].iter().filter_map(parse_dynamic).collect();
@@ -2821,6 +2843,7 @@ mod tests {
             data_type: "u16".into(), hold_value: 0, value_source: "device".into(),
             byte_order: "ABCD".into(), source_params: "{}".into(), interval_ms: 1000, sort_order: 0,
             device_instance_id: None,
+            unit: None, display_format: None,
         }).unwrap();
         // link it (device_instance_id) — set directly
         c.execute("UPDATE sim_registers SET device_instance_id = ?1", [id]).unwrap();
@@ -2843,6 +2866,7 @@ mod tests {
             data_type: "u16".into(), hold_value: 0, value_source: "device".into(),
             byte_order: "ABCD".into(), source_params: "{}".into(), interval_ms: 1000, sort_order: 0,
             device_instance_id: None,
+            unit: None, display_format: None,
         }).unwrap();
         c.execute("UPDATE sim_registers SET device_instance_id = ?1", [device_id]).unwrap();
 
@@ -2886,8 +2910,8 @@ mod tests {
 
     #[test]
     fn overlap_is_rejected() {
-        let existing = vec![SimRegister { id:1, unit_id:1, function_code:3, address:5, alias:"".into(), data_type:"u16".into(), hold_value:0, value_source:"hold".into(), byte_order:"ABCD".into(), source_params:"{}".into(), interval_ms:1000, sort_order:0, device_instance_id: None }];
-        let new = vec![SimRegister { id:0, unit_id:1, function_code:3, address:5, alias:"".into(), data_type:"u16".into(), hold_value:0, value_source:"hold".into(), byte_order:"ABCD".into(), source_params:"{}".into(), interval_ms:1000, sort_order:0, device_instance_id: None }];
+        let existing = vec![SimRegister { id:1, unit_id:1, function_code:3, address:5, alias:"".into(), data_type:"u16".into(), hold_value:0, value_source:"hold".into(), byte_order:"ABCD".into(), source_params:"{}".into(), interval_ms:1000, sort_order:0, device_instance_id: None, unit: None, display_format: None }];
+        let new = vec![SimRegister { id:0, unit_id:1, function_code:3, address:5, alias:"".into(), data_type:"u16".into(), hold_value:0, value_source:"hold".into(), byte_order:"ABCD".into(), source_params:"{}".into(), interval_ms:1000, sort_order:0, device_instance_id: None, unit: None, display_format: None }];
         assert!(validate_no_overlap(&existing, &new).is_err());
         let free = vec![SimRegister { address:6, ..new[0].clone() }];
         assert!(validate_no_overlap(&existing, &free).is_ok());
@@ -2895,9 +2919,9 @@ mod tests {
 
     #[test]
     fn multi_word_overlap_is_detected() {
-        let existing = vec![SimRegister { id:1, unit_id:1, function_code:3, address:101, alias:"".into(), data_type:"u16".into(), hold_value:0, value_source:"hold".into(), byte_order:"ABCD".into(), source_params:"{}".into(), interval_ms:1000, sort_order:0, device_instance_id: None }];
+        let existing = vec![SimRegister { id:1, unit_id:1, function_code:3, address:101, alias:"".into(), data_type:"u16".into(), hold_value:0, value_source:"hold".into(), byte_order:"ABCD".into(), source_params:"{}".into(), interval_ms:1000, sort_order:0, device_instance_id: None, unit: None, display_format: None }];
         // f32 at address 100 spans 100-101, colliding with the existing register at 101.
-        let overlapping = vec![SimRegister { id:0, unit_id:1, function_code:3, address:100, alias:"".into(), data_type:"f32".into(), hold_value:0, value_source:"hold".into(), byte_order:"ABCD".into(), source_params:"{}".into(), interval_ms:1000, sort_order:0, device_instance_id: None }];
+        let overlapping = vec![SimRegister { id:0, unit_id:1, function_code:3, address:100, alias:"".into(), data_type:"f32".into(), hold_value:0, value_source:"hold".into(), byte_order:"ABCD".into(), source_params:"{}".into(), interval_ms:1000, sort_order:0, device_instance_id: None, unit: None, display_format: None }];
         assert!(validate_no_overlap(&existing, &overlapping).is_err());
 
         // f32 at address 102 spans 102-103, which is free.
@@ -2909,8 +2933,8 @@ mod tests {
     fn rebase_shifts_child_addresses() {
         // pure helper: given child regs + old base + new base, produce shifted regs; error on out-of-range
         let children = vec![
-            SimRegister { id:1, unit_id:1, function_code:4, address:100, alias:"".into(), data_type:"u16".into(), hold_value:0, value_source:"device".into(), byte_order:"ABCD".into(), source_params:"{}".into(), interval_ms:1000, sort_order:0, device_instance_id: None },
-            SimRegister { id:2, unit_id:1, function_code:4, address:101, alias:"".into(), data_type:"u16".into(), hold_value:0, value_source:"device".into(), byte_order:"ABCD".into(), source_params:"{}".into(), interval_ms:1000, sort_order:0, device_instance_id: None },
+            SimRegister { id:1, unit_id:1, function_code:4, address:100, alias:"".into(), data_type:"u16".into(), hold_value:0, value_source:"device".into(), byte_order:"ABCD".into(), source_params:"{}".into(), interval_ms:1000, sort_order:0, device_instance_id: None, unit: None, display_format: None },
+            SimRegister { id:2, unit_id:1, function_code:4, address:101, alias:"".into(), data_type:"u16".into(), hold_value:0, value_source:"device".into(), byte_order:"ABCD".into(), source_params:"{}".into(), interval_ms:1000, sort_order:0, device_instance_id: None, unit: None, display_format: None },
         ];
         let shifted = rebase_children(&children, 100, 200).unwrap();
         assert_eq!(shifted[0].address, 200);
@@ -2930,6 +2954,7 @@ mod tests {
             data_type: "u16".into(), hold_value: 0, value_source: "device".into(),
             byte_order: "ABCD".into(), source_params: "{}".into(), interval_ms: 1000, sort_order: 0,
             device_instance_id: None,
+            unit: None, display_format: None,
         }).unwrap();
         c.execute("UPDATE sim_registers SET device_instance_id = ?1 WHERE id = ?2", [device_id, reg_id]).unwrap();
 
@@ -2939,6 +2964,7 @@ mod tests {
             data_type: "u16".into(), hold_value: 0, value_source: "hold".into(),
             byte_order: "ABCD".into(), source_params: "{}".into(), interval_ms: 1000, sort_order: 0,
             device_instance_id: None,
+            unit: None, display_format: None,
         }).unwrap();
 
         let device = db_list_devices(&c).unwrap().into_iter().find(|d| d.id == device_id).unwrap();
@@ -2950,5 +2976,26 @@ mod tests {
         assert_eq!(others.len(), 1, "the unrelated register should not be part of this device's children");
         assert_eq!(others[0].address, 5);
         assert_eq!(shifted[0].address, 200);
+    }
+
+    #[test]
+    fn unit_and_display_format_round_trip() {
+        let c = Connection::open_in_memory().unwrap();
+        create_sim_schema(&c).unwrap();
+        let mut reg = SimRegister {
+            id: 0, unit_id: 1, function_code: 3, address: 5, alias: "T".into(),
+            data_type: "u16".into(), hold_value: 0, sort_order: 0, device_instance_id: None,
+            value_source: "hold".into(), byte_order: "ABCD".into(), source_params: "{}".into(),
+            interval_ms: 1000, unit: Some("°C".into()), display_format: Some("dec2".into()),
+        };
+        let id = db_insert_register(&c, &reg).unwrap();
+        let got = db_list_registers(&c).unwrap().into_iter().find(|r| r.id == id).unwrap();
+        assert_eq!(got.unit.as_deref(), Some("°C"));
+        assert_eq!(got.display_format.as_deref(), Some("dec2"));
+        // update path preserves them too
+        reg.id = id; reg.unit = Some("kPa".into());
+        db_update_register(&c, &reg).unwrap();
+        let got2 = db_list_registers(&c).unwrap().into_iter().find(|r| r.id == id).unwrap();
+        assert_eq!(got2.unit.as_deref(), Some("kPa"));
     }
 }

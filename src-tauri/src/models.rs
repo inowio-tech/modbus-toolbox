@@ -342,6 +342,10 @@ pub struct SimRegister {
     pub source_params: String,
     #[serde(default = "default_interval_ms")]
     pub interval_ms: i64,
+    #[serde(default)]
+    pub unit: Option<String>,
+    #[serde(default)]
+    pub display_format: Option<String>,
 }
 
 fn default_u16_type() -> String { "u16".to_string() }
