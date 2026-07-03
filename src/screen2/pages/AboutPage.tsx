@@ -131,6 +131,7 @@ export default function AboutPage() {
                   <li>Visualize data with value tiles and trend charts.</li>
                   <li>Poll devices at controlled intervals.</li>
                   <li>Monitor live values with search, status filters, and pinned watch-lists.</li>
+                  <li>Expose registers as a Modbus TCP server (TCP Simulator) so SCADA systems, PLCs, and test masters can poll and write the app as virtual devices.</li>
                   <li>View workspace and application logs.</li>
                   <li>Persist configuration for repeatable testing.</li>
                 </ul>

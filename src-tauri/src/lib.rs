@@ -17,6 +17,8 @@ mod analyzer;
 
 mod analyzer_polling;
 
+mod simulator;
+
 mod modbus;
 use modbus::{
     modbus_rtu_connect, modbus_rtu_diagnostics_echo, modbus_rtu_disconnect,
@@ -125,6 +127,7 @@ pub fn run() {
         .manage(TrafficCaptureState::default())
         .manage(AnalyzerPollingState::default())
         .manage(ImportCache(Mutex::new(None)))
+        .manage(simulator::SimulatorState::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -227,7 +230,27 @@ pub fn run() {
             export_workspace_package,
             validate_import_workspace,
             execute_workspace_import,
-            clear_import_cache
+            clear_import_cache,
+            simulator::simulator_get_config,
+            simulator::simulator_set_config,
+            simulator::simulator_list_registers,
+            simulator::simulator_add_register,
+            simulator::simulator_update_register,
+            simulator::simulator_delete_register,
+            simulator::simulator_list_rules,
+            simulator::simulator_add_rule,
+            simulator::simulator_update_rule,
+            simulator::simulator_delete_rule,
+            simulator::simulator_start,
+            simulator::simulator_stop,
+            simulator::simulator_status,
+            simulator::simulator_snapshot,
+            simulator::simulator_list_device_templates,
+            simulator::simulator_add_device,
+            simulator::simulator_list_devices,
+            simulator::simulator_delete_device,
+            simulator::simulator_update_device,
+            simulator::simulator_rebase_device,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

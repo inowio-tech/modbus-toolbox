@@ -12,7 +12,8 @@ dist
 dist-ssr
 *.local
 temp
-
+docs
+.superpowers
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

@@ -4,7 +4,25 @@ All notable changes to this project are tracked here following [Keep a Changelog
 
 ## [Unreleased]
 
-_No changes yet._
+### Added
+- **TCP Simulator (Modbus TCP server).** Expose hand-configured Hold registers
+  across multiple Unit IDs on one port so external masters (SCADA/PLCs/test
+  tools) can poll and write the app as virtual devices. Start/Stop with an
+  Expose toggle (LAN `0.0.0.0` / Local only `127.0.0.1`), a configurable port,
+  the resolved "Listening on …" address, per-Unit register CRUD, a live value
+  view, and a global running-status chip. (First layer of the 0.4.0 simulator.)
+- Simulator registers can now be driven by device presets and raw generators
+  (sine/ramp/random/toggle) with per-register update intervals and u16/i16/u32/i32/f32
+  + byte-order encoding; live values stream to the UI.
+- Route-from-slave value source — expose a live value read from a connected
+  real slave (Modbus gateway), with ok/stale/missing status.
+- Automation rules — trigger (interval / register condition / on client
+  write) → action (set/inc/dec/toggle/copy/randomize) for conditional and
+  cross-register behavior.
+- Device templates — add a ready-made virtual device (temp/humidity sensor,
+  energy meter, VFD, relay board, soil sensor, register playground) from a
+  built-in catalog; its registers are grouped under the device and can be
+  re-based or removed as a unit.
 
 ## [0.3.2] - 2026-06-19
 ### Fixed

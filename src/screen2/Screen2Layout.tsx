@@ -3,7 +3,7 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, Outlet, useNavigate, useParams } from "react-router-dom";
-import { FiActivity, FiBookOpen, FiGrid, FiInfo, FiLink, FiList, FiMaximize2, FiMinimize2, FiMenu, FiX, FiRefreshCcw } from "react-icons/fi";
+import { FiActivity, FiBookOpen, FiGrid, FiInfo, FiLink, FiList, FiMaximize2, FiMinimize2, FiMenu, FiServer, FiX, FiRefreshCcw } from "react-icons/fi";
 import { PiNetwork } from "react-icons/pi";
 import ThemeToggleButton from "../components/ThemeToggleButton";
 import { useErrorToast } from "../components/ToastProvider";
@@ -13,6 +13,7 @@ import { clearTrafficEvents, setTrafficCaptureEnabled } from "./api/traffic";
 import { LuPanelLeftOpen, LuPanelRightOpen, LuSettings } from "react-icons/lu";
 import TrafficMonitorPanel from "./components/TrafficMonitorPanel";
 import { useHelp } from "../help/HelpProvider";
+import SimulatorStatusChip from "./components/SimulatorStatusChip";
 
 export type Workspace = {
   name: string;
@@ -560,6 +561,7 @@ export default function Screen2Layout() {
           </div>
 
           <div className="flex items-center gap-2">
+            <SimulatorStatusChip workspaceName={workspaceName} />
             <ThemeToggleButton />
             <button
               type="button"
@@ -710,6 +712,24 @@ export default function Screen2Layout() {
             >
               <FiActivity className="h-4 w-4" aria-hidden="true" />
               <span className={`truncate ${sidebarCollapsed ? "lg:hidden" : "inline"}`}>Analyzer</span>
+            </NavLink>
+
+            <NavLink
+              className={({ isActive }) =>
+                `flex items-center gap-3 rounded-2xl border px-3 py-2 text-sm font-semibold no-underline transition ${isActive
+                  ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-800 dark:text-emerald-100"
+                  : "border-slate-200 bg-white text-slate-700 hover:border-slate-300 dark:border-slate-800 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-700"
+                }`
+              }
+              to={`/app/${encodeURIComponent(workspaceName)}/tcp-simulator`}
+              title={`${sidebarCollapsed ? "TCP Simulator" : ""}`}
+              onClick={(e) => {
+                e.preventDefault();
+                guardedNavigate(`/app/${encodeURIComponent(workspaceName)}/tcp-simulator`);
+              }}
+            >
+              <FiServer className="h-4 w-4" aria-hidden="true" />
+              <span className={`truncate ${sidebarCollapsed ? "lg:hidden" : "inline"}`}>TCP Simulator</span>
             </NavLink>
 
             <NavLink

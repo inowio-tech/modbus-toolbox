@@ -7,7 +7,8 @@ export type HelpSectionSlug =
   | "slaves"
   | "analyzer"
   | "logs"
-  | "settings";
+  | "settings"
+  | "simulator";
 
 export const DEFAULT_HELP_SECTION: HelpSectionSlug = "overview";
 
@@ -42,7 +43,8 @@ export function isHelpSectionSlug(value: string | null | undefined): value is He
     value === "slaves" ||
     value === "analyzer" ||
     value === "logs" ||
-    value === "settings"
+    value === "settings" ||
+    value === "simulator"
   );
 }
 

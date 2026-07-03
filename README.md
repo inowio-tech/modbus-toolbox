@@ -24,6 +24,7 @@ Desktop toolkit for configuring, testing, and monitoring Modbus TCP/RTU devices.
 - Multi-protocol Modbus (TCP & RTU) with persistent workspace settings
 - Device registry with register mapping, bulk import/export, and diagnostics
 - Live register **Monitor** view with density, search, status filters, and pinned watch-lists for large maps
+- **TCP Simulator (server mode)** — expose hand-configured Holding registers across multiple Unit IDs so SCADA systems, PLCs, and test tools can poll the app as a virtual Modbus device
 - Real-time analyzer powered by ECharts plus traffic capture for debugging
 - Grid/list workspace browser that remembers your view, and per-slave register-type recall
 - Rich logging, dark/light theming, and keyboard-friendly UI

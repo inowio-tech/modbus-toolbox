@@ -20,10 +20,12 @@ use crate::traffic::{log_traffic_event, TrafficLogInput};
 use crate::settings::{get_client_settings, get_connection_settings};
 use crate::workspace::validate_workspace_name;
 
+pub type SessionMap = Arc<Mutex<HashMap<String, Arc<AsyncMutex<client::Context>>>>>;
+
 #[derive(Default)]
 pub struct ModbusState {
-    pub(crate) tcp_sessions: Mutex<HashMap<String, Arc<AsyncMutex<client::Context>>>>,
-    pub(crate) rtu_sessions: Mutex<HashMap<String, Arc<AsyncMutex<client::Context>>>>,
+    pub(crate) tcp_sessions: SessionMap,
+    pub(crate) rtu_sessions: SessionMap,
 }
 
 #[derive(Debug, Serialize)]
@@ -170,7 +172,7 @@ mod tests {
     }
 }
 
-fn lookup_slave_id_and_address_offset(
+pub(crate) fn lookup_slave_id_and_address_offset(
     app: &tauri::AppHandle,
     workspace: &str,
     unit_id: i64,

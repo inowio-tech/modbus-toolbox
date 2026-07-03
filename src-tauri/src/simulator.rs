@@ -1,0 +1,2954 @@
+//! Modbus TCP **server** ("TCP Simulator"): exposes configured registers so
+//! external masters can poll/write the app as one or more virtual devices.
+//!
+//! Layer 1 (this module): in-memory banks per Unit ID, a tokio-modbus TCP
+//! server task, Hold registers, register CRUD, Start/Stop. Generators, rules,
+//! route-from-slave, and device templates arrive in later plans.
+
+#![allow(dead_code)] // trimmed as later tasks consume these items
+
+use std::collections::HashMap;
+use std::future;
+use std::net::SocketAddr;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, RwLock};
+use std::task::{Context, Poll};
+use std::time::Duration;
+
+use serde::Serialize;
+use tauri::Emitter;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::net::TcpListener;
+use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
+use tokio_modbus::prelude::*;
+use tokio_modbus::server::tcp::{accept_tcp_connection, Server};
+use tokio_modbus::server::Service;
+
+/// Number of 16-bit words a data type occupies. (Plan 2: 1- and 2-word types.)
+pub fn word_count(data_type: &str) -> usize {
+    match data_type {
+        "u32" | "i32" | "f32" => 2,
+        _ => 1, // bool/u16/i16
+    }
+}
+
+fn swap_bytes_word(w: u16) -> u16 {
+    (w << 8) | (w >> 8)
+}
+
+/// Big-endian bytes of the value for the given type (Plan 2 supported types only).
+fn value_to_be_bytes(data_type: &str, value: f64) -> Result<Vec<u8>, String> {
+    match data_type {
+        "u16" => Ok(((value as i64) as u16).to_be_bytes().to_vec()),
+        "i16" => Ok(((value as i64) as i16).to_be_bytes().to_vec()),
+        "u32" => Ok(((value as i64) as u32).to_be_bytes().to_vec()),
+        "i32" => Ok(((value as i64) as i32).to_be_bytes().to_vec()),
+        "f32" => Ok((value as f32).to_be_bytes().to_vec()),
+        other => Err(format!("unsupported simulator data type '{other}' (Plan 2: u16/i16/u32/i32/f32)")),
+    }
+}
+
+/// Encode a numeric value into Modbus words in address order, honoring byte order.
+/// Canonical = big-endian bytes; then byte-swap (BADC/DCBA), then word-swap (CDAB/DCBA).
+/// Mirrors `src/screen2/utils/modbusValueCodec.ts`.
+pub fn encode_value(data_type: &str, byte_order: &str, value: f64) -> Result<Vec<u16>, String> {
+    let bytes = value_to_be_bytes(data_type, value)?;
+    // pack big-endian bytes into words
+    let mut words: Vec<u16> = bytes
+        .chunks(2)
+        .map(|c| ((c[0] as u16) << 8) | (c[1] as u16))
+        .collect();
+
+    let order = byte_order.trim().to_uppercase();
+    let byte_swap = matches!(order.as_str(), "BADC" | "DCBA");
+    let word_swap = matches!(order.as_str(), "CDAB" | "DCBA");
+
+    // validate order against word count
+    match order.as_str() {
+        "ABCD" | "BADC" => {}
+        "CDAB" | "DCBA" if words.len() == 2 => {}
+        _ => return Err(format!("byte order '{order}' invalid for {}-word type '{data_type}'", words.len())),
+    }
+
+    if byte_swap {
+        for w in words.iter_mut() {
+            *w = swap_bytes_word(*w);
+        }
+    }
+    if word_swap && words.len() == 2 {
+        words.swap(0, 1);
+    }
+    Ok(words)
+}
+
+use std::f64::consts::PI;
+
+#[derive(Debug, Clone, Copy)]
+pub struct GenParams {
+    pub min: f64,
+    pub max: f64,
+    pub period_ms: f64,
+}
+
+/// Deterministic value in [0,1) from a 64-bit seed (SplitMix64 finalizer).
+fn unit_random(seed: u64) -> f64 {
+    let mut z = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    (z >> 11) as f64 / (1u64 << 53) as f64
+}
+
+pub fn generator_value(kind: &str, p: &GenParams, elapsed_ms: f64, seed: u64) -> f64 {
+    let span = p.max - p.min;
+    let period = if p.period_ms <= 0.0 { 1000.0 } else { p.period_ms };
+    match kind {
+        "sine" => {
+            let mid = p.min + span / 2.0;
+            mid + (span / 2.0) * (2.0 * PI * elapsed_ms / period).sin()
+        }
+        "ramp" => {
+            let frac = (elapsed_ms % period) / period;
+            p.min + span * frac
+        }
+        "random" => p.min + span * unit_random(seed),
+        "toggle" => {
+            if (elapsed_ms % period) < period / 2.0 {
+                p.max
+            } else {
+                p.min
+            }
+        }
+        _ => p.min,
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PresetParams {
+    pub min: f64,
+    pub max: f64,
+    pub period_ms: f64,
+}
+
+pub fn preset_value(preset: &str, p: &PresetParams, elapsed_ms: f64) -> f64 {
+    let span = p.max - p.min;
+    let period = if p.period_ms <= 0.0 { 60000.0 } else { p.period_ms };
+    let clamp = |v: f64| v.max(p.min).min(p.max);
+    // deterministic small wobble within the band, amplitude ~2% of span
+    let wobble = |amp: f64, fast: f64| (span * amp) * (2.0 * PI * elapsed_ms / fast).sin();
+    match preset {
+        // slow drift across the band + small noise
+        "temperature" | "humidity" | "pressure" | "flow" | "analog" => {
+            let mid = p.min + span / 2.0;
+            clamp(mid + (span / 2.0 * 0.8) * (2.0 * PI * elapsed_ms / period).sin() + wobble(0.02, period / 13.0))
+        }
+        // higher-frequency noisy signal
+        "vibration" => {
+            let mid = p.min + span / 2.0;
+            clamp(mid + (span / 2.0 * 0.5) * (2.0 * PI * elapsed_ms / (period / 20.0)).sin() + wobble(0.1, period / 47.0))
+        }
+        // on/off by half period
+        "discrete" => {
+            if (elapsed_ms % period) < period / 2.0 { p.max } else { p.min }
+        }
+        // monotonic within [min,max], wraps at max
+        "counter" => {
+            let step_per_period = span.max(1.0);
+            p.min + ((elapsed_ms / period) * step_per_period) % span.max(1.0)
+        }
+        _ => p.min + span / 2.0,
+    }
+}
+
+/// Dynamic (device/generator) register resolved from a `SimRegister`'s
+/// `value_source` + `source_params`. `None` from `parse_dynamic` for hold
+/// registers (Plan 1 behavior) or unparseable params.
+#[derive(Debug, Clone)]
+pub enum DynKind {
+    Generator { kind: String, params: GenParams, seed: u64 },
+    Preset { preset: String, params: PresetParams },
+    Route { slave_unit: u8, connection_kind: String, src_fc: u8, src_addr: u16, count: u16 },
+}
+
+#[derive(Debug, Clone)]
+pub struct DynReg {
+    pub unit: u8,
+    pub bank: u8,
+    pub address: u16,
+    pub data_type: String,
+    pub byte_order: String,
+    pub kind: DynKind,
+    pub interval_ms: f64,
+}
+
+fn json_f64(v: &serde_json::Value, key: &str, default: f64) -> f64 {
+    v.get(key).and_then(|x| x.as_f64()).unwrap_or(default)
+}
+
+/// Parse a `SimRegister` into a `DynReg` for `value_source` `"generator"`/`"device"`.
+/// Returns `None` for `"hold"` (and any other/unrecognized source) or when
+/// `source_params` isn't valid JSON.
+pub fn parse_dynamic(reg: &SimRegister) -> Option<DynReg> {
+    let v: serde_json::Value = serde_json::from_str(&reg.source_params).ok()?;
+    let interval_ms = if reg.interval_ms > 0 { reg.interval_ms as f64 } else { 1000.0 };
+    let seed = ((reg.unit_id as u64) << 32) ^ (reg.function_code as u64) << 16 ^ (reg.address as u64);
+    let common = (json_f64(&v, "min", 0.0), json_f64(&v, "max", 100.0), json_f64(&v, "periodMs", 1000.0));
+    let kind = match reg.value_source.as_str() {
+        "generator" => DynKind::Generator {
+            kind: v.get("kind").and_then(|x| x.as_str()).unwrap_or("sine").to_string(),
+            params: GenParams { min: common.0, max: common.1, period_ms: common.2 },
+            seed,
+        },
+        "device" => DynKind::Preset {
+            preset: v.get("preset").and_then(|x| x.as_str()).unwrap_or("analog").to_string(),
+            params: PresetParams { min: common.0, max: common.1, period_ms: common.2 },
+        },
+        "route" => DynKind::Route {
+            slave_unit: v.get("slaveUnitId").and_then(|x| x.as_u64()).unwrap_or(1) as u8,
+            connection_kind: v.get("connectionKind").and_then(|x| x.as_str()).unwrap_or("tcp").to_string(),
+            src_fc: v.get("functionCode").and_then(|x| x.as_u64()).unwrap_or(3) as u8,
+            src_addr: v.get("address").and_then(|x| x.as_u64()).unwrap_or(0) as u16,
+            count: word_count(&reg.data_type) as u16,
+        },
+        _ => return None,
+    };
+    Some(DynReg {
+        unit: reg.unit_id as u8, bank: reg.function_code as u8, address: reg.address as u16,
+        data_type: reg.data_type.clone(), byte_order: reg.byte_order.clone(), kind, interval_ms,
+    })
+}
+
+/// Compute the live value of a dynamic register at `elapsed_ms` since the
+/// simulator started.
+pub fn dyn_value(d: &DynReg, elapsed_ms: f64) -> f64 {
+    match &d.kind {
+        DynKind::Generator { kind, params, seed } => {
+            // vary the random seed with time so successive ticks differ
+            generator_value(kind, params, elapsed_ms, seed ^ (elapsed_ms as u64))
+        }
+        DynKind::Preset { preset, params } => preset_value(preset, params, elapsed_ms),
+        // Route registers are populated by the tick's routed network read
+        // (Task 4), not by `dyn_value`; this arm only exists to keep the
+        // match exhaustive.
+        DynKind::Route { .. } => 0.0,
+    }
+}
+
+/// Write `words` at consecutive addresses starting at `address`, in the bank
+/// selected by Modbus function code (1=coils, 2=discrete inputs, 3=holding,
+/// 4=input). Bit banks store a word as `!= 0`.
+pub fn place_words(banks: &mut HashMap<u8, SimBanks>, unit: u8, bank: u8, address: u16, words: &[u16]) {
+    let b = banks.entry(unit).or_default();
+    for (i, &w) in words.iter().enumerate() {
+        let addr = address.wrapping_add(i as u16);
+        match bank {
+            1 => { b.coils.insert(addr, w != 0); }
+            2 => { b.discrete_inputs.insert(addr, w != 0); }
+            3 => { b.holding.insert(addr, w); }
+            4 => { b.input.insert(addr, w); }
+            _ => {}
+        }
+    }
+}
+
+type Banks = Arc<RwLock<HashMap<u8, SimBanks>>>;
+
+/// Per-register source status for route-from-slave registers, keyed by
+/// (unit, bank/function-code, address); values `"ok"`/`"stale"`/`"missing"`.
+/// Not present in the map for non-route registers (snapshot rows default to
+/// `None` in that case).
+type StatusMap = Arc<Mutex<HashMap<(u8, u8, u16), &'static str>>>;
+
+/// Wraps a `TcpStream` and increments/decrements the shared `clients` counter
+/// so that `SimEngine::client_count()` reflects active open connections.
+struct CountedStream {
+    inner: tokio::net::TcpStream,
+    clients: Arc<AtomicUsize>,
+}
+
+impl CountedStream {
+    fn new(inner: tokio::net::TcpStream, clients: Arc<AtomicUsize>) -> Self {
+        clients.fetch_add(1, Ordering::Relaxed);
+        Self { inner, clients }
+    }
+}
+
+impl Drop for CountedStream {
+    fn drop(&mut self) {
+        self.clients.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+impl AsyncRead for CountedStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for CountedStream {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write_vectored(cx, bufs)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
+}
+
+// Safety: CountedStream is Unpin because TcpStream is Unpin.
+impl Unpin for CountedStream {}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListenInfo {
+    pub bound: String,
+    pub port: u16,
+    pub addresses: Vec<String>,
+}
+
+#[derive(Clone)]
+struct SimService {
+    banks: Banks,
+    clients: Arc<AtomicUsize>,
+    /// Client-write events `(unit, bank, address)`, drained by the tick task
+    /// each interval so `onWrite` rules can react. Bank is the FC's bank: coil
+    /// writes → 1, register writes → 3.
+    writes: Arc<Mutex<Vec<(u8, u8, u16)>>>,
+}
+
+impl Service for SimService {
+    type Request = SlaveRequest<'static>;
+    type Response = Response;
+    type Exception = ExceptionCode;
+    type Future = future::Ready<Result<Response, ExceptionCode>>;
+
+    fn call(&self, req: SlaveRequest<'static>) -> Self::Future {
+        let unit = req.slave;
+        future::ready(self.handle(unit, req.request))
+    }
+}
+
+impl SimService {
+    fn handle(&self, unit: u8, req: Request<'static>) -> Result<Response, ExceptionCode> {
+        let mut banks = self.banks.write().map_err(|_| ExceptionCode::ServerDeviceFailure)?;
+        let bank = banks.get_mut(&unit).ok_or(ExceptionCode::IllegalDataAddress)?;
+        match req {
+            Request::ReadCoils(a, c) => Ok(Response::ReadCoils(bank.read_coils(a, c)?)),
+            Request::ReadDiscreteInputs(a, c) => {
+                Ok(Response::ReadDiscreteInputs(bank.read_discrete_inputs(a, c)?))
+            }
+            Request::ReadHoldingRegisters(a, c) => {
+                Ok(Response::ReadHoldingRegisters(bank.read_holding(a, c)?))
+            }
+            Request::ReadInputRegisters(a, c) => {
+                Ok(Response::ReadInputRegisters(bank.read_input(a, c)?))
+            }
+            Request::WriteSingleCoil(a, v) => {
+                bank.write_single_coil(a, v)?;
+                self.push_write(unit, 1, a);
+                Ok(Response::WriteSingleCoil(a, v))
+            }
+            Request::WriteSingleRegister(a, v) => {
+                bank.write_single_register(a, v)?;
+                self.push_write(unit, 3, a);
+                Ok(Response::WriteSingleRegister(a, v))
+            }
+            Request::WriteMultipleCoils(a, vals) => {
+                bank.write_multiple_coils(a, &vals)?;
+                self.push_write(unit, 1, a);
+                Ok(Response::WriteMultipleCoils(a, vals.len() as u16))
+            }
+            Request::WriteMultipleRegisters(a, vals) => {
+                bank.write_multiple_registers(a, &vals)?;
+                self.push_write(unit, 3, a);
+                Ok(Response::WriteMultipleRegisters(a, vals.len() as u16))
+            }
+            _ => Err(ExceptionCode::IllegalFunction),
+        }
+    }
+
+    /// Record a successful client write's target for `onWrite` rules to see
+    /// on the next tick drain. Best-effort: a poisoned lock silently drops
+    /// the event rather than failing the client's write response.
+    fn push_write(&self, unit: u8, bank: u8, address: u16) {
+        if let Ok(mut w) = self.writes.lock() {
+            w.push((unit, bank, address));
+        }
+    }
+}
+
+/// Abstraction over "can emit the `simulator_values` event", so
+/// `SimEngine::start`'s tick task doesn't need a live `tauri::AppHandle` to be
+/// exercised in tests. Blanket-implemented for any real `tauri::AppHandle<R>`;
+/// tests use a plain no-op/recording sink instead of `tauri::test::mock_app()`
+/// (its `MockRuntime` still links real wry/tao/webview2-com natively, which
+/// reproducibly crashes the test binary at process load with
+/// `STATUS_ENTRYPOINT_NOT_FOUND` on this machine even after a full clean
+/// rebuild — see Task 6 report for details).
+pub trait ValuesSink: Send + 'static {
+    fn emit_values(&self, event: SimValuesEvent);
+}
+
+impl<R: tauri::Runtime> ValuesSink for tauri::AppHandle<R> {
+    fn emit_values(&self, event: SimValuesEvent) {
+        let _ = self.emit("simulator_values", event);
+    }
+}
+
+#[derive(Default)]
+pub struct SimEngine {
+    banks: Option<Banks>,
+    clients: Arc<AtomicUsize>,
+    shutdown: Option<oneshot::Sender<()>>,
+    handle: Option<JoinHandle<()>>,
+    tick_shutdown: Option<oneshot::Sender<()>>,
+    tick_handle: Option<JoinHandle<()>>,
+    statuses: StatusMap,
+}
+
+impl SimEngine {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.handle.is_some()
+    }
+
+    pub fn client_count(&self) -> usize {
+        self.clients.load(Ordering::Relaxed)
+    }
+
+    pub fn snapshot(&self) -> HashMap<u8, SimBanks> {
+        self.banks
+            .as_ref()
+            .and_then(|b| b.read().ok().map(|g| g.clone()))
+            .unwrap_or_default()
+    }
+
+    /// Snapshot of per-register route source statuses (unit, bank, address) →
+    /// `"ok"`/`"stale"`/`"missing"`. Empty when the simulator isn't running or
+    /// no route registers have ticked yet.
+    pub fn statuses(&self) -> HashMap<(u8, u8, u16), &'static str> {
+        self.statuses.lock().ok().map(|g| g.clone()).unwrap_or_default()
+    }
+
+    /// Upsert (Some) or remove (None) a single configured address in the live banks.
+    pub fn apply_register_change(
+        &self,
+        unit: u8,
+        bank: u8,
+        addr: u16,
+        value_word: Option<u16>,
+        value_bit: Option<bool>,
+    ) {
+        let Some(banks) = self.banks.as_ref() else { return };
+        let Ok(mut guard) = banks.write() else { return };
+        let entry = guard.entry(unit).or_default();
+        match bank {
+            1 => set_bit(&mut entry.coils, addr, value_bit),
+            2 => set_bit(&mut entry.discrete_inputs, addr, value_bit),
+            3 => set_word(&mut entry.holding, addr, value_word),
+            4 => set_word(&mut entry.input, addr, value_word),
+            _ => {}
+        }
+    }
+
+    /// Upsert consecutive words at `address` (device/generator registers span
+    /// multiple addresses); mirrors `place_words`' bank routing.
+    pub fn apply_words(&self, unit: u8, bank: u8, address: u16, words: &[u16]) {
+        let Some(banks) = self.banks.as_ref() else { return };
+        let Ok(mut guard) = banks.write() else { return };
+        place_words(&mut guard, unit, bank, address, words);
+    }
+
+    /// Remove `count` consecutive configured addresses starting at `address`
+    /// from the given bank (1=coils, 2=discrete inputs, 3=holding, 4=input).
+    pub fn clear_span(&self, unit: u8, bank: u8, address: u16, count: u16) {
+        let Some(banks) = self.banks.as_ref() else { return };
+        let Ok(mut guard) = banks.write() else { return };
+        let entry = guard.entry(unit).or_default();
+        for i in 0..count {
+            let addr = address.wrapping_add(i);
+            match bank {
+                1 => { entry.coils.remove(&addr); }
+                2 => { entry.discrete_inputs.remove(&addr); }
+                3 => { entry.holding.remove(&addr); }
+                4 => { entry.input.remove(&addr); }
+                _ => {}
+            }
+        }
+    }
+
+    pub async fn start<S: ValuesSink>(
+        &mut self,
+        app: S,
+        workspace: String,
+        host: &str,
+        port: u16,
+        tick_ms: u64,
+        initial: HashMap<u8, SimBanks>,
+        dynamics: Vec<DynReg>,
+        tcp_sessions: crate::modbus::SessionMap,
+        rtu_sessions: crate::modbus::SessionMap,
+        rules: Vec<RuleDef>,
+    ) -> Result<ListenInfo, String> {
+        if self.is_running() {
+            return Err("simulator already running".to_string());
+        }
+        let addr: SocketAddr = format!("{host}:{port}")
+            .parse()
+            .map_err(|e| format!("invalid bind address {host}:{port}: {e}"))?;
+        let listener = TcpListener::bind(addr)
+            .await
+            .map_err(|e| format!("failed to bind {host}:{port}: {e}"))?;
+        let bound = listener.local_addr().map_err(|e| e.to_string())?;
+
+        let banks: Banks = Arc::new(RwLock::new(initial));
+        self.banks = Some(banks.clone());
+        self.clients.store(0, Ordering::Relaxed);
+
+        // Client-write events, pushed by `SimService::handle` on every
+        // successful write and drained by the tick task each interval so
+        // `onWrite` rules can react to them.
+        let writes: Arc<Mutex<Vec<(u8, u8, u16)>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let clients_arc = self.clients.clone();
+        let service = SimService { banks: banks.clone(), clients: self.clients.clone(), writes: writes.clone() };
+        let server = Server::new(listener);
+        let new_service = move |_addr: SocketAddr| Ok(Some(service.clone()));
+        let on_connected = move |stream, socket_addr| {
+            let new_service = new_service.clone();
+            let clients = clients_arc.clone();
+            async move {
+                accept_tcp_connection(stream, socket_addr, new_service)
+                    .map(|opt| opt.map(|(svc, tcp)| (svc, CountedStream::new(tcp, clients))))
+            }
+        };
+        let on_error = |err| log::error!("simulator server error: {err}");
+
+        let (tx, rx) = oneshot::channel::<()>();
+        let handle = tokio::spawn(async move {
+            let _ = server
+                .serve_until(&on_connected, on_error, async {
+                    let _ = rx.await;
+                })
+                .await;
+        });
+        self.shutdown = Some(tx);
+        self.handle = Some(handle);
+
+        // Interval tick task: recomputes device/generator registers and pushes
+        // live values via the `simulator_values` event. Never holds the banks
+        // write lock across an `.await`.
+        let statuses: StatusMap = Arc::new(Mutex::new(HashMap::new()));
+        self.statuses = statuses.clone();
+
+        let (tick_tx, mut tick_rx) = oneshot::channel::<()>();
+        let tick_banks = banks.clone();
+        let tick_statuses = statuses.clone();
+        let tick_writes = writes.clone();
+        let tick_handle = tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_millis(tick_ms.max(10)));
+            let start = std::time::Instant::now();
+            let mut next_due: Vec<f64> = vec![0.0; dynamics.len()];
+            let mut last_emit = 0.0f64;
+            let mut rule_states: HashMap<i64, RuleState> = HashMap::new();
+            loop {
+                tokio::select! {
+                    _ = &mut tick_rx => break,
+                    _ = ticker.tick() => {
+                        let elapsed = start.elapsed().as_millis() as f64;
+                        // Collect updates WITHOUT holding the banks lock: route
+                        // reads await the network, generator/preset values are
+                        // computed synchronously. The std write lock is taken
+                        // once below, after every `.await` has resolved.
+                        let mut updates: Vec<(u8, u8, u16, Vec<u16>)> = Vec::new();
+                        for (i, d) in dynamics.iter().enumerate() {
+                            if elapsed < next_due[i] { continue; }
+                            next_due[i] = elapsed + d.interval_ms;
+                            match &d.kind {
+                                DynKind::Generator { .. } | DynKind::Preset { .. } => {
+                                    if let Ok(words) = encode_value(&d.data_type, &d.byte_order, dyn_value(d, elapsed)) {
+                                        updates.push((d.unit, d.bank, d.address, words));
+                                    }
+                                }
+                                DynKind::Route { slave_unit, connection_kind, src_fc, src_addr, count } => {
+                                    let map = if connection_kind == "serial" { &rtu_sessions } else { &tcp_sessions };
+                                    let session = map.lock().ok().and_then(|g| g.get(&workspace).cloned());
+                                    // "missing" = no client session for this workspace (client not
+                                    // connected). "stale" = a session exists but the source read
+                                    // errored/timed out. Last-good value is kept in both cases; a
+                                    // finer "dangling config / deleted slave" distinction is a
+                                    // possible future refinement.
+                                    let status = match session {
+                                        None => "missing", // no session yet → keep last-good
+                                        Some(sess) => match route_read_words(sess, *slave_unit, *src_fc, *src_addr, *count, 1000).await {
+                                            Ok(words) => { updates.push((d.unit, d.bank, d.address, words)); "ok" }
+                                            Err(_) => "stale", // read error/timeout → keep last-good
+                                        },
+                                    };
+                                    if let Ok(mut s) = tick_statuses.lock() {
+                                        s.insert((d.unit, d.bank, d.address), status);
+                                    }
+                                }
+                            }
+                        }
+                        {
+                            let Ok(mut guard) = tick_banks.write() else { continue };
+                            for (u, b, a, w) in &updates {
+                                place_words(&mut guard, *u, *b, *a, w);
+                            }
+                            // Rules run last, synchronously, under the same
+                            // write lock: they see this tick's generator/route
+                            // updates and their own actions apply before serve.
+                            let drained: Vec<(u8, u8, u16)> = tick_writes
+                                .lock()
+                                .map(|mut w| std::mem::take(&mut *w))
+                                .unwrap_or_default();
+                            let acts = eval_rules(&rules, &mut rule_states, &guard, elapsed, &drained);
+                            for (id, a) in acts {
+                                apply_action(&mut guard, &a, elapsed as u64 ^ id as u64);
+                            }
+                        } // lock dropped before any await/emit
+                        if elapsed - last_emit >= 250.0 {
+                            last_emit = elapsed;
+                            let rows = snapshot_rows(&tick_banks, &tick_statuses);
+                            app.emit_values(SimValuesEvent { workspace: workspace.clone(), rows });
+                        }
+                    }
+                }
+            }
+        });
+        self.tick_shutdown = Some(tick_tx);
+        self.tick_handle = Some(tick_handle);
+
+        Ok(ListenInfo {
+            bound: bound.to_string(),
+            port: bound.port(),
+            addresses: resolve_client_addresses(host, bound.port()),
+        })
+    }
+
+    pub async fn stop(&mut self) {
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
+        if let Some(tx) = self.tick_shutdown.take() {
+            let _ = tx.send(());
+        }
+        if let Some(handle) = self.handle.take() {
+            // Intentional hard stop: the oneshot signals graceful shutdown, but
+            // abort() is deliberate — Stop must unbind and drop all client
+            // connections immediately rather than waiting for them to drain.
+            handle.abort();
+            let _ = handle.await;
+        }
+        if let Some(handle) = self.tick_handle.take() {
+            handle.abort();
+            let _ = handle.await;
+        }
+        self.banks = None;
+        self.clients.store(0, Ordering::Relaxed);
+    }
+}
+
+fn set_bit(map: &mut HashMap<u16, bool>, addr: u16, v: Option<bool>) {
+    match v {
+        Some(b) => { map.insert(addr, b); }
+        None => { map.remove(&addr); }
+    }
+}
+fn set_word(map: &mut HashMap<u16, u16>, addr: u16, v: Option<u16>) {
+    match v {
+        Some(w) => { map.insert(addr, w); }
+        None => { map.remove(&addr); }
+    }
+}
+
+/// Client-reachable addresses to display. For `0.0.0.0` we surface the primary
+/// outbound IPv4 (a UDP "connect" sets the route's local addr without sending);
+/// otherwise just the bound host. Multi-NIC enumeration can be added later.
+fn resolve_client_addresses(host: &str, port: u16) -> Vec<String> {
+    if host == "0.0.0.0" {
+        if let Some(ip) = primary_local_ipv4() {
+            return vec![format!("{ip}:{port}")];
+        }
+        return vec![format!("127.0.0.1:{port}")];
+    }
+    vec![format!("{host}:{port}")]
+}
+
+fn primary_local_ipv4() -> Option<std::net::Ipv4Addr> {
+    use std::net::{IpAddr, UdpSocket};
+    let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
+    sock.connect("8.8.8.8:80").ok()?;
+    match sock.local_addr().ok()?.ip() {
+        IpAddr::V4(v4) => Some(v4),
+        IpAddr::V6(_) => None,
+    }
+}
+
+/// In-memory Modbus banks for ONE simulated Unit ID. Addresses present in a map
+/// are "configured"; absent addresses are not served (reads/writes there raise
+/// IllegalDataAddress, matching real devices).
+#[derive(Debug, Default, Clone)]
+pub struct SimBanks {
+    pub coils: HashMap<u16, bool>,
+    pub discrete_inputs: HashMap<u16, bool>,
+    pub holding: HashMap<u16, u16>,
+    pub input: HashMap<u16, u16>,
+}
+
+fn read_bits(map: &HashMap<u16, bool>, addr: u16, cnt: u16) -> Result<Vec<bool>, ExceptionCode> {
+    let mut out = Vec::with_capacity(cnt as usize);
+    for i in 0..cnt {
+        let a = addr.checked_add(i).ok_or(ExceptionCode::IllegalDataAddress)?;
+        out.push(*map.get(&a).ok_or(ExceptionCode::IllegalDataAddress)?);
+    }
+    Ok(out)
+}
+
+fn read_words(map: &HashMap<u16, u16>, addr: u16, cnt: u16) -> Result<Vec<u16>, ExceptionCode> {
+    let mut out = Vec::with_capacity(cnt as usize);
+    for i in 0..cnt {
+        let a = addr.checked_add(i).ok_or(ExceptionCode::IllegalDataAddress)?;
+        out.push(*map.get(&a).ok_or(ExceptionCode::IllegalDataAddress)?);
+    }
+    Ok(out)
+}
+
+fn write_bits(map: &mut HashMap<u16, bool>, addr: u16, vals: &[bool]) -> Result<(), ExceptionCode> {
+    for (i, &v) in vals.iter().enumerate() {
+        let a = addr.checked_add(i as u16).ok_or(ExceptionCode::IllegalDataAddress)?;
+        match map.get_mut(&a) {
+            Some(slot) => *slot = v,
+            None => return Err(ExceptionCode::IllegalDataAddress),
+        }
+    }
+    Ok(())
+}
+
+fn write_words(map: &mut HashMap<u16, u16>, addr: u16, vals: &[u16]) -> Result<(), ExceptionCode> {
+    for (i, &v) in vals.iter().enumerate() {
+        let a = addr.checked_add(i as u16).ok_or(ExceptionCode::IllegalDataAddress)?;
+        match map.get_mut(&a) {
+            Some(slot) => *slot = v,
+            None => return Err(ExceptionCode::IllegalDataAddress),
+        }
+    }
+    Ok(())
+}
+
+impl SimBanks {
+    pub fn read_coils(&self, addr: u16, cnt: u16) -> Result<Vec<bool>, ExceptionCode> {
+        read_bits(&self.coils, addr, cnt)
+    }
+    pub fn read_discrete_inputs(&self, addr: u16, cnt: u16) -> Result<Vec<bool>, ExceptionCode> {
+        read_bits(&self.discrete_inputs, addr, cnt)
+    }
+    pub fn read_holding(&self, addr: u16, cnt: u16) -> Result<Vec<u16>, ExceptionCode> {
+        read_words(&self.holding, addr, cnt)
+    }
+    pub fn read_input(&self, addr: u16, cnt: u16) -> Result<Vec<u16>, ExceptionCode> {
+        read_words(&self.input, addr, cnt)
+    }
+    pub fn write_single_coil(&mut self, addr: u16, val: bool) -> Result<(), ExceptionCode> {
+        write_bits(&mut self.coils, addr, &[val])
+    }
+    pub fn write_multiple_coils(&mut self, addr: u16, vals: &[bool]) -> Result<(), ExceptionCode> {
+        write_bits(&mut self.coils, addr, vals)
+    }
+    pub fn write_single_register(&mut self, addr: u16, val: u16) -> Result<(), ExceptionCode> {
+        write_words(&mut self.holding, addr, &[val])
+    }
+    pub fn write_multiple_registers(&mut self, addr: u16, vals: &[u16]) -> Result<(), ExceptionCode> {
+        write_words(&mut self.holding, addr, vals)
+    }
+}
+
+use rusqlite::Connection;
+
+use crate::models::{SimConfig, SimDevice, SimRegister, SimRule};
+
+pub fn create_sim_schema(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS sim_config (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            enabled INTEGER NOT NULL DEFAULT 0,
+            host TEXT NOT NULL DEFAULT '0.0.0.0',
+            port INTEGER NOT NULL DEFAULT 502,
+            tick_ms INTEGER NOT NULL DEFAULT 100,
+            updated_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS sim_registers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_instance_id INTEGER,
+            unit_id INTEGER NOT NULL,
+            function_code INTEGER NOT NULL,
+            address INTEGER NOT NULL,
+            alias TEXT NOT NULL DEFAULT '',
+            data_type TEXT NOT NULL DEFAULT 'u16',
+            byte_order TEXT,
+            display_format TEXT,
+            value_source TEXT NOT NULL DEFAULT 'hold',
+            source_params TEXT,
+            interval_ms INTEGER,
+            hold_value INTEGER NOT NULL DEFAULT 0,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(unit_id, function_code, address)
+        );
+        CREATE TABLE IF NOT EXISTS sim_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_instance_id INTEGER,
+            name TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            trigger TEXT NOT NULL,
+            actions TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS sim_devices (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            template_key TEXT,
+            name TEXT NOT NULL,
+            unit_id INTEGER NOT NULL,
+            base_address INTEGER,
+            params TEXT,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            sort_order INTEGER NOT NULL DEFAULT 0
+        );",
+    )
+}
+
+pub fn db_get_config(conn: &Connection) -> rusqlite::Result<SimConfig> {
+    conn.query_row(
+        "SELECT enabled, host, port, tick_ms FROM sim_config WHERE id = 1",
+        [],
+        |r| Ok(SimConfig {
+            enabled: r.get::<_, i64>(0)? != 0,
+            host: r.get(1)?,
+            port: r.get(2)?,
+            tick_ms: r.get(3)?,
+        }),
+    )
+    .or_else(|_| Ok(SimConfig { enabled: false, host: "0.0.0.0".into(), port: 502, tick_ms: 100 }))
+}
+
+pub fn db_set_config(conn: &Connection, cfg: &SimConfig) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO sim_config (id, enabled, host, port, tick_ms, updated_at)
+         VALUES (1, ?1, ?2, ?3, ?4, datetime('now'))
+         ON CONFLICT(id) DO UPDATE SET
+             enabled = excluded.enabled, host = excluded.host,
+             port = excluded.port, tick_ms = excluded.tick_ms,
+             updated_at = excluded.updated_at",
+        rusqlite::params![cfg.enabled as i64, cfg.host, cfg.port, cfg.tick_ms],
+    )?;
+    Ok(())
+}
+
+pub fn db_list_registers(conn: &Connection) -> rusqlite::Result<Vec<SimRegister>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, unit_id, function_code, address, alias, data_type, hold_value, sort_order,
+                COALESCE(value_source,'hold'), COALESCE(byte_order,'ABCD'),
+                COALESCE(source_params,'{}'), COALESCE(interval_ms,1000), device_instance_id
+         FROM sim_registers ORDER BY unit_id, function_code, address",
+    )?;
+    let rows = stmt.query_map([], |r| Ok(SimRegister {
+        id: r.get(0)?,
+        unit_id: r.get(1)?,
+        function_code: r.get(2)?,
+        address: r.get(3)?,
+        alias: r.get(4)?,
+        data_type: r.get(5)?,
+        hold_value: r.get(6)?,
+        sort_order: r.get(7)?,
+        value_source: r.get(8)?,
+        byte_order: r.get(9)?,
+        source_params: r.get(10)?,
+        interval_ms: r.get(11)?,
+        device_instance_id: r.get::<_, Option<i64>>(12)?,
+    }))?;
+    rows.collect()
+}
+
+pub fn db_insert_register(conn: &Connection, reg: &SimRegister) -> rusqlite::Result<i64> {
+    conn.execute(
+        "INSERT INTO sim_registers
+            (unit_id, function_code, address, alias, data_type, hold_value, sort_order,
+             value_source, byte_order, source_params, interval_ms)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+        rusqlite::params![
+            reg.unit_id, reg.function_code, reg.address, reg.alias, reg.data_type,
+            reg.hold_value, reg.sort_order, reg.value_source, reg.byte_order,
+            reg.source_params, reg.interval_ms
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn db_update_register(conn: &Connection, reg: &SimRegister) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE sim_registers SET
+            unit_id=?2, function_code=?3, address=?4, alias=?5, data_type=?6, hold_value=?7,
+            sort_order=?8, value_source=?9, byte_order=?10, source_params=?11, interval_ms=?12
+         WHERE id=?1",
+        rusqlite::params![
+            reg.id, reg.unit_id, reg.function_code, reg.address, reg.alias, reg.data_type,
+            reg.hold_value, reg.sort_order, reg.value_source, reg.byte_order,
+            reg.source_params, reg.interval_ms
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn db_delete_register(conn: &Connection, id: i64) -> rusqlite::Result<()> {
+    conn.execute("DELETE FROM sim_registers WHERE id = ?1", [id])?;
+    Ok(())
+}
+
+pub fn db_list_rules(conn: &Connection) -> rusqlite::Result<Vec<SimRule>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, enabled, trigger, actions, sort_order FROM sim_rules ORDER BY sort_order, id",
+    )?;
+    let rows = stmt.query_map([], |r| Ok(SimRule {
+        id: r.get(0)?, name: r.get(1)?, enabled: r.get::<_, i64>(2)? != 0,
+        trigger: r.get(3)?, actions: r.get(4)?, sort_order: r.get(5)?,
+    }))?;
+    rows.collect()
+}
+pub fn db_insert_rule(conn: &Connection, rule: &SimRule) -> rusqlite::Result<i64> {
+    conn.execute(
+        "INSERT INTO sim_rules (name, enabled, trigger, actions, sort_order) VALUES (?1,?2,?3,?4,?5)",
+        rusqlite::params![rule.name, rule.enabled as i64, rule.trigger, rule.actions, rule.sort_order],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+pub fn db_update_rule(conn: &Connection, rule: &SimRule) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE sim_rules SET name=?2, enabled=?3, trigger=?4, actions=?5, sort_order=?6 WHERE id=?1",
+        rusqlite::params![rule.id, rule.name, rule.enabled as i64, rule.trigger, rule.actions, rule.sort_order],
+    )?;
+    Ok(())
+}
+pub fn db_delete_rule(conn: &Connection, id: i64) -> rusqlite::Result<()> {
+    conn.execute("DELETE FROM sim_rules WHERE id = ?1", [id])?;
+    Ok(())
+}
+
+pub fn db_list_devices(conn: &Connection) -> rusqlite::Result<Vec<SimDevice>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, COALESCE(template_key,''), name, unit_id, COALESCE(base_address,0), enabled, sort_order
+         FROM sim_devices ORDER BY sort_order, id",
+    )?;
+    let rows = stmt.query_map([], |r| Ok(SimDevice {
+        id: r.get(0)?, template_key: r.get(1)?, name: r.get(2)?, unit_id: r.get(3)?,
+        base_address: r.get(4)?, enabled: r.get::<_, i64>(5)? != 0, sort_order: r.get(6)?,
+    }))?;
+    rows.collect()
+}
+pub fn db_insert_device(conn: &Connection, d: &SimDevice) -> rusqlite::Result<i64> {
+    conn.execute(
+        "INSERT INTO sim_devices (template_key, name, unit_id, base_address, enabled, sort_order)
+         VALUES (?1,?2,?3,?4,?5,?6)",
+        rusqlite::params![d.template_key, d.name, d.unit_id, d.base_address, d.enabled as i64, d.sort_order],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+pub fn db_update_device(conn: &Connection, d: &SimDevice) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE sim_devices SET name=?2, unit_id=?3, base_address=?4, enabled=?5, sort_order=?6 WHERE id=?1",
+        rusqlite::params![d.id, d.name, d.unit_id, d.base_address, d.enabled as i64, d.sort_order],
+    )?;
+    Ok(())
+}
+pub fn db_delete_device(conn: &Connection, id: i64) -> rusqlite::Result<()> {
+    conn.execute("DELETE FROM sim_registers WHERE device_instance_id = ?1", [id])?;
+    conn.execute("DELETE FROM sim_rules WHERE device_instance_id = ?1", [id])?;
+    conn.execute("DELETE FROM sim_devices WHERE id = ?1", [id])?;
+    Ok(())
+}
+
+/// Registers belonging to a given device instance (its "children").
+pub fn db_list_registers_for_device(conn: &Connection, device_id: i64) -> rusqlite::Result<Vec<SimRegister>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, unit_id, function_code, address, alias, data_type, hold_value, sort_order,
+                COALESCE(value_source,'hold'), COALESCE(byte_order,'ABCD'),
+                COALESCE(source_params,'{}'), COALESCE(interval_ms,1000), device_instance_id
+         FROM sim_registers WHERE device_instance_id = ?1 ORDER BY unit_id, function_code, address",
+    )?;
+    let rows = stmt.query_map([device_id], |r| Ok(SimRegister {
+        id: r.get(0)?,
+        unit_id: r.get(1)?,
+        function_code: r.get(2)?,
+        address: r.get(3)?,
+        alias: r.get(4)?,
+        data_type: r.get(5)?,
+        hold_value: r.get(6)?,
+        sort_order: r.get(7)?,
+        value_source: r.get(8)?,
+        byte_order: r.get(9)?,
+        source_params: r.get(10)?,
+        interval_ms: r.get(11)?,
+        device_instance_id: r.get::<_, Option<i64>>(12)?,
+    }))?;
+    rows.collect()
+}
+
+/// Registers NOT belonging to a given device instance (i.e. every other
+/// register, whether unowned or owned by a different device). Used to check
+/// that a re-base doesn't collide with anything outside the device itself.
+pub fn db_list_registers_excluding_device(conn: &Connection, device_id: i64) -> rusqlite::Result<Vec<SimRegister>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, unit_id, function_code, address, alias, data_type, hold_value, sort_order,
+                COALESCE(value_source,'hold'), COALESCE(byte_order,'ABCD'),
+                COALESCE(source_params,'{}'), COALESCE(interval_ms,1000), device_instance_id
+         FROM sim_registers WHERE device_instance_id IS NULL OR device_instance_id != ?1
+         ORDER BY unit_id, function_code, address",
+    )?;
+    let rows = stmt.query_map([device_id], |r| Ok(SimRegister {
+        id: r.get(0)?,
+        unit_id: r.get(1)?,
+        function_code: r.get(2)?,
+        address: r.get(3)?,
+        alias: r.get(4)?,
+        data_type: r.get(5)?,
+        hold_value: r.get(6)?,
+        sort_order: r.get(7)?,
+        value_source: r.get(8)?,
+        byte_order: r.get(9)?,
+        source_params: r.get(10)?,
+        interval_ms: r.get(11)?,
+        device_instance_id: r.get::<_, Option<i64>>(12)?,
+    }))?;
+    rows.collect()
+}
+
+/// One register in a `DeviceTemplate`'s register map, relative to the
+/// device's `base_address` (absolute address = `base_address + offset`).
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TemplateRegister {
+    pub offset: u16,
+    pub bank: u8,
+    pub data_type: String,
+    pub byte_order: String,
+    pub value_source: String,
+    pub source_params: String,
+    pub alias: String,
+}
+
+/// A built-in (or, in a later plan, custom) device register-map template.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceTemplate {
+    pub template_key: String,
+    pub name: String,
+    pub category: String,
+    pub description: String,
+    pub icon: String,
+    pub registers: Vec<TemplateRegister>,
+}
+
+fn treg(offset: u16, bank: u8, data_type: &str, byte_order: &str, value_source: &str, source_params: &str, alias: &str) -> TemplateRegister {
+    TemplateRegister {
+        offset,
+        bank,
+        data_type: data_type.into(),
+        byte_order: byte_order.into(),
+        value_source: value_source.into(),
+        source_params: source_params.into(),
+        alias: alias.into(),
+    }
+}
+
+/// The built-in device template catalog (Plan 5 v1: register-maps only, no
+/// bundled rules — see plan's Global Constraints).
+pub fn builtin_templates() -> Vec<DeviceTemplate> {
+    vec![
+        DeviceTemplate {
+            template_key: "register_playground".into(),
+            name: "Register Playground".into(),
+            category: "Learning".into(),
+            description: "Learn Modbus with mixed live values".into(),
+            icon: "🎓".into(),
+            registers: vec![
+                treg(0, 1, "bool", "ABCD", "hold", "{}", ""),
+                treg(1, 1, "bool", "ABCD", "hold", "{}", ""),
+                treg(2, 1, "bool", "ABCD", "hold", "{}", ""),
+                treg(3, 1, "bool", "ABCD", "hold", "{}", ""),
+                treg(0, 3, "u16", "ABCD", "hold", "{}", "Setpoint"),
+                treg(1, 3, "u16", "ABCD", "generator", r#"{"kind":"sine","min":0,"max":1000,"periodMs":5000}"#, "Sine"),
+                treg(2, 3, "u16", "ABCD", "generator", r#"{"kind":"ramp","min":0,"max":100,"periodMs":4000}"#, "Ramp"),
+                treg(0, 4, "u16", "ABCD", "device", r#"{"preset":"temperature","min":20,"max":30}"#, "Temp"),
+                treg(1, 4, "u16", "ABCD", "device", r#"{"preset":"counter","min":0,"max":10000,"periodMs":1000}"#, "Counter"),
+            ],
+        },
+        DeviceTemplate {
+            template_key: "temp_humidity".into(),
+            name: "Temp/Humidity Sensor".into(),
+            category: "Sensors".into(),
+            description: "Temperature + humidity transmitter (SHT20-style)".into(),
+            icon: "🌡️".into(),
+            registers: vec![
+                treg(0, 4, "u16", "ABCD", "device", r#"{"preset":"temperature","min":18,"max":28}"#, "Temperature"),
+                treg(1, 4, "u16", "ABCD", "device", r#"{"preset":"humidity","min":40,"max":70}"#, "Humidity"),
+            ],
+        },
+        DeviceTemplate {
+            template_key: "ac_energy_meter".into(),
+            name: "AC Energy Meter".into(),
+            category: "Power".into(),
+            description: "AC energy/power meter (SDM/PZEM-style)".into(),
+            icon: "⚡".into(),
+            registers: vec![
+                treg(0, 4, "f32", "ABCD", "device", r#"{"preset":"analog","min":220,"max":240}"#, "Voltage"),
+                treg(2, 4, "f32", "ABCD", "device", r#"{"preset":"analog","min":0,"max":30}"#, "Current"),
+                treg(4, 4, "f32", "ABCD", "device", r#"{"preset":"analog","min":0,"max":7000}"#, "Power W"),
+                treg(6, 4, "f32", "ABCD", "device", r#"{"preset":"counter","min":0,"max":1000000,"periodMs":2000}"#, "Energy kWh"),
+            ],
+        },
+        DeviceTemplate {
+            template_key: "relay_board".into(),
+            name: "Relay Board".into(),
+            category: "I/O".into(),
+            description: "8-channel relay board".into(),
+            icon: "🔀".into(),
+            registers: vec![
+                treg(0, 1, "bool", "ABCD", "hold", "{}", "Relay 1"),
+                treg(1, 1, "bool", "ABCD", "hold", "{}", "Relay 2"),
+                treg(2, 1, "bool", "ABCD", "hold", "{}", "Relay 3"),
+                treg(3, 1, "bool", "ABCD", "hold", "{}", "Relay 4"),
+                treg(4, 1, "bool", "ABCD", "hold", "{}", "Relay 5"),
+                treg(5, 1, "bool", "ABCD", "hold", "{}", "Relay 6"),
+                treg(6, 1, "bool", "ABCD", "hold", "{}", "Relay 7"),
+                treg(7, 1, "bool", "ABCD", "hold", "{}", "Relay 8"),
+            ],
+        },
+        DeviceTemplate {
+            template_key: "vfd_drive".into(),
+            name: "VFD Drive".into(),
+            category: "Drives".into(),
+            description: "Variable frequency drive".into(),
+            icon: "⚙️".into(),
+            registers: vec![
+                treg(0, 3, "u16", "ABCD", "hold", "{}", "Control word"),
+                treg(1, 3, "u16", "ABCD", "hold", "{}", "Freq setpoint"),
+                treg(0, 4, "u16", "ABCD", "hold", "{}", "Status word"),
+                treg(1, 4, "u16", "ABCD", "generator", r#"{"kind":"sine","min":0,"max":500,"periodMs":8000}"#, "Output freq"),
+                treg(2, 4, "u16", "ABCD", "device", r#"{"preset":"analog","min":0,"max":100}"#, "Output current"),
+            ],
+        },
+        DeviceTemplate {
+            template_key: "soil_sensor".into(),
+            name: "Soil Sensor".into(),
+            category: "Sensors".into(),
+            description: "RS485 soil 7-in-1 sensor".into(),
+            icon: "🌱".into(),
+            registers: vec![
+                treg(0, 4, "u16", "ABCD", "device", r#"{"preset":"analog","min":0,"max":100}"#, "Moisture %"),
+                treg(1, 4, "u16", "ABCD", "device", r#"{"preset":"temperature","min":10,"max":30}"#, "Soil temp"),
+                treg(2, 4, "u16", "ABCD", "device", r#"{"preset":"analog","min":0,"max":2000}"#, "EC"),
+                treg(3, 4, "u16", "ABCD", "device", r#"{"preset":"analog","min":40,"max":90}"#, "pH x10"),
+            ],
+        },
+    ]
+}
+
+/// Look up a built-in template by key.
+pub fn find_template(key: &str) -> Option<DeviceTemplate> {
+    builtin_templates().into_iter().find(|t| t.template_key == key)
+}
+
+#[tauri::command]
+pub fn simulator_list_device_templates() -> Result<Vec<DeviceTemplate>, String> {
+    Ok(builtin_templates())
+}
+
+/// Expand a `DeviceTemplate` into concrete `SimRegister`s for a device
+/// instance at unit `unit_id` with absolute addresses starting at `base`.
+/// `device_instance_id` is left unset (0) — the caller sets it after the
+/// owning `sim_devices` row is inserted.
+pub fn template_to_registers(t: &DeviceTemplate, unit_id: i64, base: i64) -> Vec<SimRegister> {
+    t.registers
+        .iter()
+        .map(|r| SimRegister {
+            id: 0,
+            unit_id,
+            function_code: r.bank as i64,
+            address: base + r.offset as i64,
+            alias: r.alias.clone(),
+            data_type: r.data_type.clone(),
+            hold_value: 0,
+            sort_order: 0,
+            device_instance_id: None,
+            value_source: r.value_source.clone(),
+            byte_order: r.byte_order.clone(),
+            source_params: r.source_params.clone(),
+            interval_ms: 1000,
+        })
+        .collect()
+}
+
+/// Reject `new` registers that would collide with `existing` ones on the
+/// `(unit_id, function_code, address)` key, treating multi-word registers
+/// (e.g. f32/u32/i32) as occupying `word_count` consecutive addresses.
+/// Also detects overlaps between registers within `new` itself.
+pub fn validate_no_overlap(existing: &[SimRegister], new: &[SimRegister]) -> Result<(), String> {
+    use std::collections::HashSet;
+
+    let mut occupied: HashSet<(i64, i64, i64)> = HashSet::new();
+    for e in existing {
+        let span = word_count(&e.data_type) as i64;
+        for addr in e.address..=(e.address + span - 1) {
+            occupied.insert((e.unit_id, e.function_code, addr));
+        }
+    }
+
+    for n in new {
+        let span = word_count(&n.data_type) as i64;
+        for addr in n.address..=(n.address + span - 1) {
+            if occupied.contains(&(n.unit_id, n.function_code, addr)) {
+                return Err(format!(
+                    "device would overlap existing register at unit {} bank {} address {}",
+                    n.unit_id, n.function_code, addr
+                ));
+            }
+        }
+        for addr in n.address..=(n.address + span - 1) {
+            occupied.insert((n.unit_id, n.function_code, addr));
+        }
+    }
+    Ok(())
+}
+
+/// Shift a device's child registers by `new_base - old_base`, returning the
+/// updated copies (addresses only; ids/other fields unchanged). Errors if any
+/// resulting address (accounting for the register's word-count span) would
+/// fall outside the valid 0..=65535 range.
+pub fn rebase_children(children: &[SimRegister], old_base: i64, new_base: i64) -> Result<Vec<SimRegister>, String> {
+    let delta = new_base - old_base;
+    let mut shifted = Vec::with_capacity(children.len());
+    for reg in children {
+        let new_address = reg.address + delta;
+        let span = word_count(&reg.data_type) as i64;
+        if new_address < 0 || new_address + span - 1 > 65535 {
+            return Err(format!(
+                "rebased address {} out of range (0-65535)",
+                new_address
+            ));
+        }
+        shifted.push(SimRegister { address: new_address, ..reg.clone() });
+    }
+    Ok(shifted)
+}
+
+#[tauri::command]
+pub fn simulator_add_device(
+    app: tauri::AppHandle,
+    name: String,
+    device_name: String,
+    template_key: String,
+    unit_id: i64,
+    base_address: i64,
+) -> Result<i64, String> {
+    let ws = validate_workspace_name(&name)?;
+    if !(0..=255).contains(&unit_id) {
+        return Err(format!("unit id {} out of range (0-255)", unit_id));
+    }
+    if !(0..=65535).contains(&base_address) {
+        return Err(format!("base address {} out of range (0-65535)", base_address));
+    }
+    let t = find_template(&template_key).ok_or("unknown template")?;
+    let regs = template_to_registers(&t, unit_id, base_address);
+
+    for reg in &regs {
+        if reg.address + word_count(&reg.data_type) as i64 - 1 > 65535 {
+            return Err(format!(
+                "device does not fit: register at address {} exceeds 65535",
+                reg.address
+            ));
+        }
+    }
+
+    let mut conn = open_workspace_db(&app, &ws)?;
+    let existing = db_list_registers(&conn).map_err(|e| e.to_string())?;
+    validate_no_overlap(&existing, &regs)?;
+
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+    let device_id = db_insert_device(
+        &tx,
+        &SimDevice {
+            id: 0,
+            template_key,
+            name: device_name,
+            unit_id,
+            base_address,
+            enabled: true,
+            sort_order: 0,
+        },
+    )
+    .map_err(|e| e.to_string())?;
+
+    for reg in &regs {
+        let reg_id = db_insert_register(&tx, reg).map_err(|e| e.to_string())?;
+        tx.execute(
+            "UPDATE sim_registers SET device_instance_id = ?1 WHERE id = ?2",
+            rusqlite::params![device_id, reg_id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    tx.commit().map_err(|e| e.to_string())?;
+
+    Ok(device_id)
+}
+
+#[tauri::command]
+pub fn simulator_list_devices(app: tauri::AppHandle, name: String) -> Result<Vec<SimDevice>, String> {
+    let ws = validate_workspace_name(&name)?;
+    let conn = open_workspace_db(&app, &ws)?;
+    db_list_devices(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn simulator_delete_device(app: tauri::AppHandle, name: String, id: i64) -> Result<(), String> {
+    let ws = validate_workspace_name(&name)?;
+    let conn = open_workspace_db(&app, &ws)?;
+    db_delete_device(&conn, id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn simulator_update_device(app: tauri::AppHandle, name: String, device: SimDevice) -> Result<(), String> {
+    let ws = validate_workspace_name(&name)?;
+    let conn = open_workspace_db(&app, &ws)?;
+    db_update_device(&conn, &device).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn simulator_rebase_device(
+    app: tauri::AppHandle,
+    name: String,
+    id: i64,
+    new_base_address: i64,
+) -> Result<(), String> {
+    let ws = validate_workspace_name(&name)?;
+    if !(0..=65535).contains(&new_base_address) {
+        return Err(format!("base address {} out of range (0-65535)", new_base_address));
+    }
+    let conn = open_workspace_db(&app, &ws)?;
+
+    let mut device = db_list_devices(&conn)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|d| d.id == id)
+        .ok_or_else(|| format!("device {} not found", id))?;
+
+    let children = db_list_registers_for_device(&conn, id).map_err(|e| e.to_string())?;
+    let shifted = rebase_children(&children, device.base_address, new_base_address)?;
+
+    // The shifted registers must not collide with anything outside this
+    // device (other devices' registers or unowned/manual registers).
+    let others = db_list_registers_excluding_device(&conn, id).map_err(|e| e.to_string())?;
+    validate_no_overlap(&others, &shifted)?;
+
+    device.base_address = new_base_address;
+    db_update_device(&conn, &device).map_err(|e| e.to_string())?;
+    for reg in &shifted {
+        db_update_register(&conn, reg).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// A rule's trigger condition, parsed from the `SimRule.trigger` JSON.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Trigger {
+    /// Fires every `ms` milliseconds.
+    Interval { ms: f64 },
+    /// Fires (edge-triggered) when `register op value` transitions to true.
+    Condition { unit: u8, bank: u8, address: u16, op: String, value: i64 },
+    /// Fires when a client writes to `(unit, bank, address)`; `address: None`
+    /// matches any address in that unit/bank.
+    OnWrite { unit: u8, bank: u8, address: Option<u16> },
+}
+
+/// A rule's action, parsed from an entry in the `SimRule.actions` JSON array.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Action {
+    Set { unit: u8, bank: u8, address: u16, value: i64 },
+    Inc { unit: u8, bank: u8, address: u16, by: i64 },
+    Dec { unit: u8, bank: u8, address: u16, by: i64 },
+    Toggle { unit: u8, bank: u8, address: u16 },
+    Copy {
+        src_unit: u8,
+        src_bank: u8,
+        src_addr: u16,
+        unit: u8,
+        bank: u8,
+        address: u16,
+        scale: f64,
+        offset: f64,
+    },
+    Randomize { unit: u8, bank: u8, address: u16, min: i64, max: i64 },
+}
+
+/// A fully-parsed rule, ready for evaluation.
+#[derive(Debug, Clone)]
+pub struct RuleDef {
+    pub id: i64,
+    pub enabled: bool,
+    pub trigger: Trigger,
+    pub actions: Vec<Action>,
+    pub sort_order: i64,
+}
+
+fn json_u8(v: &serde_json::Value, key: &str, default: u8) -> u8 {
+    v.get(key).and_then(|x| x.as_u64()).map(|x| x as u8).unwrap_or(default)
+}
+
+fn json_u16(v: &serde_json::Value, key: &str, default: u16) -> u16 {
+    v.get(key).and_then(|x| x.as_u64()).map(|x| x as u16).unwrap_or(default)
+}
+
+fn json_i64(v: &serde_json::Value, key: &str, default: i64) -> i64 {
+    v.get(key).and_then(|x| x.as_i64()).unwrap_or(default)
+}
+
+/// Parse a single action from its JSON object; unknown `type` → `None` (the
+/// caller skips it, so one bad action doesn't invalidate the whole rule).
+fn parse_action(v: &serde_json::Value) -> Option<Action> {
+    let unit = json_u8(v, "unit", 1);
+    let bank = json_u8(v, "bank", 1);
+    let address = json_u16(v, "address", 0);
+    let action = match v.get("type").and_then(|x| x.as_str()).unwrap_or("") {
+        "set" => Action::Set { unit, bank, address, value: json_i64(v, "value", 0) },
+        "inc" => Action::Inc { unit, bank, address, by: json_i64(v, "by", 1) },
+        "dec" => Action::Dec { unit, bank, address, by: json_i64(v, "by", 1) },
+        "toggle" => Action::Toggle { unit, bank, address },
+        "copy" => Action::Copy {
+            src_unit: json_u8(v, "srcUnit", unit),
+            src_bank: json_u8(v, "srcBank", bank),
+            src_addr: json_u16(v, "srcAddr", 0),
+            unit,
+            bank,
+            address,
+            scale: v.get("scale").and_then(|x| x.as_f64()).unwrap_or(1.0),
+            offset: v.get("offset").and_then(|x| x.as_f64()).unwrap_or(0.0),
+        },
+        "randomize" => Action::Randomize {
+            unit,
+            bank,
+            address,
+            min: json_i64(v, "min", 0),
+            max: json_i64(v, "max", 0),
+        },
+        _ => return None,
+    };
+    Some(action)
+}
+
+/// Parse a `SimRule`'s `trigger`/`actions` JSON into a `RuleDef`. Returns
+/// `None` if the rule is disabled, or its `trigger`/`actions` JSON is
+/// malformed or has an unrecognized trigger `type`. Unrecognized action
+/// types are skipped (not fatal to the rule).
+pub fn parse_rule(rule: &SimRule) -> Option<RuleDef> {
+    if !rule.enabled {
+        return None;
+    }
+    let tv: serde_json::Value = serde_json::from_str(&rule.trigger).ok()?;
+    let trigger = match tv.get("type").and_then(|x| x.as_str()).unwrap_or("") {
+        "interval" => Trigger::Interval { ms: tv.get("ms").and_then(|x| x.as_f64()).unwrap_or(1000.0) },
+        "condition" => Trigger::Condition {
+            unit: json_u8(&tv, "unit", 1),
+            bank: json_u8(&tv, "bank", 1),
+            address: json_u16(&tv, "address", 0),
+            op: tv.get("op").and_then(|x| x.as_str()).unwrap_or("==").to_string(),
+            value: json_i64(&tv, "value", 0),
+        },
+        "onWrite" => {
+            let address = match tv.get("address").and_then(|x| x.as_i64()) {
+                Some(a) if a >= 0 => Some(a as u16),
+                _ => None,
+            };
+            Trigger::OnWrite { unit: json_u8(&tv, "unit", 1), bank: json_u8(&tv, "bank", 1), address }
+        }
+        _ => return None,
+    };
+    let av: serde_json::Value = serde_json::from_str(&rule.actions).ok()?;
+    let actions: Vec<Action> = av
+        .as_array()
+        .map(|arr| arr.iter().filter_map(parse_action).collect())
+        .unwrap_or_default();
+    Some(RuleDef { id: rule.id, enabled: rule.enabled, trigger, actions, sort_order: rule.sort_order })
+}
+
+/// Read a single word/bit from the banks: bit banks (1=coil, 2=discrete
+/// input) read as `0`/`1`; word banks (3=holding, 4=input) read as the
+/// stored `u16`. Returns `None` if the unit/bank/address isn't present.
+pub fn read_word(banks: &HashMap<u8, SimBanks>, unit: u8, bank: u8, addr: u16) -> Option<u16> {
+    let b = banks.get(&unit)?;
+    match bank {
+        1 => b.coils.get(&addr).map(|&v| v as u16),
+        2 => b.discrete_inputs.get(&addr).map(|&v| v as u16),
+        3 => b.holding.get(&addr).copied(),
+        4 => b.input.get(&addr).copied(),
+        _ => None,
+    }
+}
+
+/// Apply a rule `Action` to the in-memory banks, mutating the target
+/// word/bit. `Set`/`Toggle`/`Inc`/`Dec`/`Randomize` upsert the target
+/// (created if absent, default current value `0`); `Copy` and `Inc`/`Dec`
+/// no-op if their source isn't present (documented limitation — there is
+/// nothing sensible to increment/copy from). `Randomize` uses the
+/// deterministic `unit_random(rng_seed)` from Plan 2.
+pub fn apply_action(banks: &mut HashMap<u8, SimBanks>, action: &Action, rng_seed: u64) {
+    match *action {
+        Action::Set { unit, bank, address, value } => {
+            place_words(banks, unit, bank, address, &[value as u16]);
+        }
+        Action::Inc { unit, bank, address, by } => {
+            let cur = read_word(banks, unit, bank, address).unwrap_or(0);
+            let next = cur.wrapping_add(by as u16);
+            place_words(banks, unit, bank, address, &[next]);
+        }
+        Action::Dec { unit, bank, address, by } => {
+            let cur = read_word(banks, unit, bank, address).unwrap_or(0);
+            let next = cur.wrapping_sub(by as u16);
+            place_words(banks, unit, bank, address, &[next]);
+        }
+        Action::Toggle { unit, bank, address } => {
+            let cur = read_word(banks, unit, bank, address).unwrap_or(0);
+            let next: u16 = match bank {
+                1 | 2 => if cur != 0 { 0 } else { 1 },
+                _ => if cur == 0 { 1 } else { 0 },
+            };
+            place_words(banks, unit, bank, address, &[next]);
+        }
+        Action::Copy { src_unit, src_bank, src_addr, unit, bank, address, scale, offset } => {
+            if let Some(src) = read_word(banks, src_unit, src_bank, src_addr) {
+                let next = ((src as f64) * scale + offset) as i64 as u16;
+                place_words(banks, unit, bank, address, &[next]);
+            }
+        }
+        Action::Randomize { unit, bank, address, min, max } => {
+            let span = (max - min + 1).max(1);
+            let value = min + (unit_random(rng_seed) * span as f64) as i64;
+            place_words(banks, unit, bank, address, &[value as u16]);
+        }
+    }
+}
+
+/// Per-rule runtime state carried across ticks, keyed by `RuleDef.id`.
+#[derive(Debug, Clone, Default)]
+pub struct RuleState {
+    pub next_due: f64,
+    pub last_condition: bool,
+    pub last_value: Option<i64>,
+}
+
+/// Evaluate a `Condition` trigger's comparison operator. `changed` compares
+/// `cur` against the rule's previously-seen value rather than the trigger's
+/// configured `value`.
+fn compare(cur: i64, op: &str, value: i64, last_value: Option<i64>) -> bool {
+    match op {
+        "==" => cur == value,
+        "!=" => cur != value,
+        "<" => cur < value,
+        ">" => cur > value,
+        ">=" => cur >= value,
+        "<=" => cur <= value,
+        "changed" => Some(cur) != last_value,
+        _ => false,
+    }
+}
+
+/// Evaluate every rule's trigger against the current tick, returning the
+/// `(rule_id, action)` pairs to apply, in the given rule order (callers pass
+/// rules pre-sorted by `sort_order`). Rules with no existing `RuleState` get a
+/// default one inserted (Interval `next_due: 0.0` fires at t=0).
+///
+/// - `Interval`: fires when `elapsed_ms >= next_due`, then reschedules
+///   `next_due = elapsed_ms + ms`.
+/// - `Condition`: edge-fired — reads the current word/bit, compares it, and
+///   fires only on the false→true transition; `last_condition`/`last_value`
+///   are updated every call (fired or not).
+/// - `OnWrite`: fires if any drained write matches `unit`/`bank`, and either
+///   `address` is `None` (match-any) or equals the write's address.
+pub fn eval_rules(
+    rules: &[RuleDef],
+    states: &mut HashMap<i64, RuleState>,
+    banks: &HashMap<u8, SimBanks>,
+    elapsed_ms: f64,
+    writes: &[(u8, u8, u16)],
+) -> Vec<(i64, Action)> {
+    let mut out = Vec::new();
+    for r in rules {
+        let state = states.entry(r.id).or_default();
+        let fired = match &r.trigger {
+            Trigger::Interval { ms } => {
+                if elapsed_ms >= state.next_due {
+                    state.next_due = elapsed_ms + ms;
+                    true
+                } else {
+                    false
+                }
+            }
+            Trigger::Condition { unit, bank, address, op, value } => {
+                let cur = read_word(banks, *unit, *bank, *address).unwrap_or(0) as i64;
+                let c = compare(cur, op, *value, state.last_value);
+                let fired = if op == "changed" {
+                    // `changed` is itself a transition, not a level to be
+                    // edge-gated: fire on every real change (but not on the
+                    // very first observation, when there's no prior value).
+                    state.last_value.is_some() && Some(cur) != state.last_value
+                } else {
+                    c && !state.last_condition
+                };
+                state.last_condition = c;
+                state.last_value = Some(cur);
+                fired
+            }
+            Trigger::OnWrite { unit, bank, address } => writes
+                .iter()
+                .any(|w| *unit == w.0 && *bank == w.1 && (address.is_none() || *address == Some(w.2))),
+        };
+        if fired {
+            for action in &r.actions {
+                out.push((r.id, action.clone()));
+            }
+        }
+    }
+    out
+}
+
+/// Expand stored registers into in-memory banks keyed by Unit ID.
+///
+/// Hold registers (Plan 1 behavior, unchanged): single-word numeric types
+/// (u16/i16) and bit banks; `hold_value` is reduced to a 16-bit word (i16 via
+/// two's complement) or a bit (!= 0).
+///
+/// Device/generator registers (Plan 2): parsed via `parse_dynamic`, encoded
+/// via `encode_value` at `elapsed_ms = 0` (their initial/"t=0" value), and
+/// placed across as many consecutive addresses as their data type occupies
+/// via `place_words`.
+pub fn registers_to_banks(regs: &[SimRegister]) -> HashMap<u8, SimBanks> {
+    let mut out: HashMap<u8, SimBanks> = HashMap::new();
+    for reg in regs {
+        let unit = reg.unit_id as u8;
+        let bank = reg.function_code as u8;
+        let addr = reg.address as u16;
+        if let Some(d) = parse_dynamic(reg) {
+            // device/generator: place the t=0 value
+            let val = dyn_value(&d, 0.0);
+            match encode_value(&d.data_type, &d.byte_order, val) {
+                Ok(words) => place_words(&mut out, unit, bank, addr, &words),
+                Err(e) => log::warn!(
+                    "simulator: skipping register unit={} fc={} addr={}: {}",
+                    unit, bank, addr, e
+                ),
+            }
+        } else {
+            // hold: single word / bit (Plan 1 behavior)
+            let b = out.entry(unit).or_default();
+            match bank {
+                1 => { b.coils.insert(addr, reg.hold_value != 0); }
+                2 => { b.discrete_inputs.insert(addr, reg.hold_value != 0); }
+                3 => { b.holding.insert(addr, reg.hold_value as u16); }
+                4 => { b.input.insert(addr, reg.hold_value as u16); }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+use std::sync::Mutex;
+
+use crate::db::open_workspace_db;
+use crate::workspace::validate_workspace_name;
+
+#[derive(Default)]
+pub struct SimulatorState(pub Mutex<HashMap<String, SimEngine>>);
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SimStatus {
+    pub running: bool,
+    pub listen: Option<ListenInfo>,
+    pub client_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SimSnapshotRow {
+    pub unit_id: u8,
+    pub function_code: u8,
+    pub address: u16,
+    pub value_word: Option<u16>,
+    pub value_bit: Option<bool>,
+    /// Route-from-slave source status (`"ok"`/`"stale"`/`"missing"`); `None`
+    /// for non-route registers (hold/generator/device).
+    pub source_status: Option<String>,
+}
+
+/// Payload for the `simulator_values` event emitted by the tick task.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SimValuesEvent {
+    workspace: String,
+    rows: Vec<SimSnapshotRow>,
+}
+
+/// Flatten configured banks into snapshot rows (one per configured address),
+/// attaching `source_status` from `statuses` for matching (unit, bank/fc,
+/// address) keys; `None` for registers with no tracked status (non-route).
+fn rows_from_banks(
+    map: &HashMap<u8, SimBanks>,
+    statuses: &HashMap<(u8, u8, u16), &'static str>,
+) -> Vec<SimSnapshotRow> {
+    let mut rows = Vec::new();
+    for (&unit, banks) in map {
+        for (&address, &v) in &banks.coils {
+            let source_status = statuses.get(&(unit, 1, address)).map(|s| s.to_string());
+            rows.push(SimSnapshotRow { unit_id: unit, function_code: 1, address, value_word: None, value_bit: Some(v), source_status });
+        }
+        for (&address, &v) in &banks.discrete_inputs {
+            let source_status = statuses.get(&(unit, 2, address)).map(|s| s.to_string());
+            rows.push(SimSnapshotRow { unit_id: unit, function_code: 2, address, value_word: None, value_bit: Some(v), source_status });
+        }
+        for (&address, &v) in &banks.holding {
+            let source_status = statuses.get(&(unit, 3, address)).map(|s| s.to_string());
+            rows.push(SimSnapshotRow { unit_id: unit, function_code: 3, address, value_word: Some(v), value_bit: None, source_status });
+        }
+        for (&address, &v) in &banks.input {
+            let source_status = statuses.get(&(unit, 4, address)).map(|s| s.to_string());
+            rows.push(SimSnapshotRow { unit_id: unit, function_code: 4, address, value_word: Some(v), value_bit: None, source_status });
+        }
+    }
+    rows
+}
+
+/// Snapshot the live banks (behind the shared `RwLock`) into rows for the
+/// `simulator_values` event, attaching route source statuses. Both locks are
+/// dropped before returning.
+fn snapshot_rows(banks: &Banks, statuses: &StatusMap) -> Vec<SimSnapshotRow> {
+    let Ok(guard) = banks.read() else { return Vec::new() };
+    match statuses.lock() {
+        Ok(s) => rows_from_banks(&guard, &s),
+        Err(_) => rows_from_banks(&guard, &HashMap::new()),
+    }
+}
+
+fn validate_config(cfg: &SimConfig) -> Result<(), String> {
+    if !(1..=65535).contains(&cfg.port) {
+        return Err(format!("port {} out of range (1-65535)", cfg.port));
+    }
+    if cfg.host != "0.0.0.0" && cfg.host != "127.0.0.1" {
+        return Err(format!("host must be 0.0.0.0 or 127.0.0.1, got {}", cfg.host));
+    }
+    Ok(())
+}
+
+fn validate_register(reg: &SimRegister) -> Result<(), String> {
+    if !(0..=255).contains(&reg.unit_id) {
+        return Err(format!("unit id {} out of range (0-255)", reg.unit_id));
+    }
+    if !(1..=4).contains(&reg.function_code) {
+        return Err("register type must be 1=coil, 2=discrete, 3=holding, 4=input".into());
+    }
+    if !(0..=65535).contains(&reg.address) {
+        return Err(format!("address {} out of range (0-65535)", reg.address));
+    }
+    if !matches!(reg.data_type.as_str(), "bool" | "u16" | "i16" | "u32" | "i32" | "f32") {
+        return Err(format!(
+            "unsupported data type '{}' (Plan 2: bool, u16, i16, u32, i32, f32)",
+            reg.data_type
+        ));
+    }
+    if !matches!(reg.value_source.as_str(), "hold" | "device" | "generator" | "route") {
+        return Err(format!(
+            "unsupported value source '{}' (Plan 3: hold, device, generator, route)",
+            reg.value_source
+        ));
+    }
+    if reg.value_source == "hold" && !matches!(reg.data_type.as_str(), "bool" | "u16" | "i16") {
+        return Err(format!(
+            "hold value source only supports data type 'bool', 'u16', or 'i16', got '{}'",
+            reg.data_type
+        ));
+    }
+    if reg.value_source != "hold" && reg.data_type == "bool" {
+        return Err(
+            "data type 'bool' is only valid for Hold registers; use u16 for coil/discrete generators".into(),
+        );
+    }
+    // byte order must be valid for the type's word count — same rule as encode_value.
+    let order = reg.byte_order.trim().to_uppercase();
+    let words = word_count(&reg.data_type);
+    let order_valid = match order.as_str() {
+        "ABCD" | "BADC" => true,
+        "CDAB" | "DCBA" => words == 2,
+        _ => false,
+    };
+    if !order_valid {
+        return Err(format!(
+            "byte order '{}' invalid for {}-word type '{}'",
+            reg.byte_order, words, reg.data_type
+        ));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn simulator_get_config(app: tauri::AppHandle, name: String) -> Result<SimConfig, String> {
+    let ws = validate_workspace_name(&name)?;
+    let conn = open_workspace_db(&app, &ws)?;
+    db_get_config(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn simulator_set_config(app: tauri::AppHandle, name: String, config: SimConfig) -> Result<(), String> {
+    let ws = validate_workspace_name(&name)?;
+    validate_config(&config)?;
+    let conn = open_workspace_db(&app, &ws)?;
+    db_set_config(&conn, &config).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn simulator_list_registers(app: tauri::AppHandle, name: String) -> Result<Vec<SimRegister>, String> {
+    let ws = validate_workspace_name(&name)?;
+    let conn = open_workspace_db(&app, &ws)?;
+    db_list_registers(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn simulator_add_register(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SimulatorState>,
+    name: String,
+    register: SimRegister,
+) -> Result<i64, String> {
+    let ws = validate_workspace_name(&name)?;
+    validate_register(&register)?;
+    let conn = open_workspace_db(&app, &ws)?;
+    let id = db_insert_register(&conn, &register).map_err(|e| e.to_string())?;
+    apply_to_running(&state, &ws, &register, false);
+    Ok(id)
+}
+
+#[tauri::command]
+pub fn simulator_update_register(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SimulatorState>,
+    name: String,
+    register: SimRegister,
+) -> Result<(), String> {
+    let ws = validate_workspace_name(&name)?;
+    validate_register(&register)?;
+    let conn = open_workspace_db(&app, &ws)?;
+    db_update_register(&conn, &register).map_err(|e| e.to_string())?;
+    apply_to_running(&state, &ws, &register, false);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn simulator_delete_register(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SimulatorState>,
+    name: String,
+    id: i64,
+) -> Result<(), String> {
+    let ws = validate_workspace_name(&name)?;
+    let conn = open_workspace_db(&app, &ws)?;
+    // capture identity before delete so we can remove it from live banks
+    let existing = db_list_registers(&conn).map_err(|e| e.to_string())?
+        .into_iter().find(|r| r.id == id);
+    db_delete_register(&conn, id).map_err(|e| e.to_string())?;
+    if let Some(reg) = existing {
+        apply_to_running(&state, &ws, &reg, true);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn simulator_list_rules(app: tauri::AppHandle, name: String) -> Result<Vec<SimRule>, String> {
+    let ws = validate_workspace_name(&name)?;
+    let conn = open_workspace_db(&app, &ws)?;
+    db_list_rules(&conn).map_err(|e| e.to_string())
+}
+#[tauri::command]
+pub fn simulator_add_rule(app: tauri::AppHandle, name: String, rule: SimRule) -> Result<i64, String> {
+    let ws = validate_workspace_name(&name)?;
+    let conn = open_workspace_db(&app, &ws)?;
+    db_insert_rule(&conn, &rule).map_err(|e| e.to_string())
+}
+#[tauri::command]
+pub fn simulator_update_rule(app: tauri::AppHandle, name: String, rule: SimRule) -> Result<(), String> {
+    let ws = validate_workspace_name(&name)?;
+    let conn = open_workspace_db(&app, &ws)?;
+    db_update_rule(&conn, &rule).map_err(|e| e.to_string())
+}
+#[tauri::command]
+pub fn simulator_delete_rule(app: tauri::AppHandle, name: String, id: i64) -> Result<(), String> {
+    let ws = validate_workspace_name(&name)?;
+    let conn = open_workspace_db(&app, &ws)?;
+    db_delete_rule(&conn, id).map_err(|e| e.to_string())
+}
+
+fn apply_to_running(state: &tauri::State<'_, SimulatorState>, ws: &str, reg: &SimRegister, remove: bool) {
+    let map = state.0.lock().unwrap();
+    if let Some(engine) = map.get(ws) {
+        if !engine.is_running() { return; }
+        let bank = reg.function_code as u8;
+        let unit = reg.unit_id as u8;
+        let addr = reg.address as u16;
+        if remove {
+            // Covers both hold (1 word) and dynamic (multi-word) registers.
+            engine.clear_span(unit, bank, addr, word_count(&reg.data_type) as u16);
+            return;
+        }
+        if reg.value_source == "hold" {
+            let (word, bit) = if bank == 1 || bank == 2 {
+                (None, Some(reg.hold_value != 0))
+            } else {
+                (Some(reg.hold_value as u16), None)
+            };
+            engine.apply_register_change(unit, bank, addr, word, bit);
+        } else if let Some(d) = parse_dynamic(reg) {
+            // Device/generator: serve the full-width t=0 value. Animation
+            // resumes on the next Stop/Start (tick task holds its own copy
+            // of the dynamics list, built at start time).
+            if let Ok(words) = encode_value(&d.data_type, &d.byte_order, dyn_value(&d, 0.0)) {
+                engine.apply_words(unit, bank, addr, &words);
+            }
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn simulator_start(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SimulatorState>,
+    modbus: tauri::State<'_, crate::modbus::ModbusState>,
+    name: String,
+) -> Result<SimStatus, String> {
+    let ws = validate_workspace_name(&name)?;
+    let conn = open_workspace_db(&app, &ws)?;
+    let cfg = db_get_config(&conn).map_err(|e| e.to_string())?;
+    validate_config(&cfg)?;
+    let regs = db_list_registers(&conn).map_err(|e| e.to_string())?;
+    let banks = registers_to_banks(&regs);
+    let mut dynamics: Vec<DynReg> = regs.iter().filter_map(parse_dynamic).collect();
+    let mut rules: Vec<RuleDef> = db_list_rules(&conn)
+        .map_err(|e| e.to_string())?
+        .iter()
+        .filter_map(parse_rule)
+        .collect();
+    rules.sort_by_key(|r| r.sort_order);
+
+    // Resolve each route register's on-wire source address once at start:
+    // user-facing source address + the source slave's configured
+    // address_offset, the same mapping manual reads use.
+    // Note: the source slave's address_offset is captured once here, at Start.
+    // Editing that slave's offset while the simulator is running has no effect
+    // until the next Start; the live connection itself, though, IS re-resolved
+    // on every tick.
+    for d in dynamics.iter_mut() {
+        if let DynKind::Route { slave_unit, connection_kind, src_addr, .. } = &mut d.kind {
+            let (_id, offset) = crate::modbus::lookup_slave_id_and_address_offset(
+                &app, &ws, *slave_unit as i64, connection_kind,
+            );
+            *src_addr = (*src_addr as i64 + offset).clamp(0, 65535) as u16;
+        }
+    }
+
+    // Take the engine out of the map to start it without holding the lock across await.
+    let mut engine = {
+        let mut map = state.0.lock().unwrap();
+        map.remove(&ws).unwrap_or_default()
+    };
+    let result = engine.start(
+        app.clone(),
+        ws.clone(),
+        &cfg.host,
+        cfg.port as u16,
+        cfg.tick_ms as u64,
+        banks,
+        dynamics,
+        modbus.tcp_sessions.clone(),
+        modbus.rtu_sessions.clone(),
+        rules,
+    ).await;
+    let status = match &result {
+        Ok(info) => SimStatus { running: true, listen: Some(info.clone()), client_count: engine.client_count() },
+        Err(_) => SimStatus { running: false, listen: None, client_count: 0 },
+    };
+    {
+        let mut map = state.0.lock().unwrap();
+        map.insert(ws, engine);
+    }
+    result.map(|_| status)
+}
+
+#[tauri::command]
+pub async fn simulator_stop(
+    state: tauri::State<'_, SimulatorState>,
+    name: String,
+) -> Result<(), String> {
+    let ws = validate_workspace_name(&name)?;
+    let mut engine = {
+        let mut map = state.0.lock().unwrap();
+        map.remove(&ws)
+    };
+    if let Some(engine) = engine.as_mut() {
+        engine.stop().await;
+    }
+    if let Some(engine) = engine {
+        state.0.lock().unwrap().insert(ws, engine);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn simulator_status(state: tauri::State<'_, SimulatorState>, name: String) -> Result<SimStatus, String> {
+    let ws = validate_workspace_name(&name)?;
+    let map = state.0.lock().unwrap();
+    let status = match map.get(&ws) {
+        Some(engine) if engine.is_running() => SimStatus {
+            running: true,
+            listen: None,
+            client_count: engine.client_count(),
+        },
+        _ => SimStatus { running: false, listen: None, client_count: 0 },
+    };
+    Ok(status)
+}
+
+#[tauri::command]
+pub fn simulator_snapshot(state: tauri::State<'_, SimulatorState>, name: String) -> Result<Vec<SimSnapshotRow>, String> {
+    let ws = validate_workspace_name(&name)?;
+    let map = state.0.lock().unwrap();
+    let rows = match map.get(&ws) {
+        Some(engine) => rows_from_banks(&engine.snapshot(), &engine.statuses()),
+        None => Vec::new(),
+    };
+    Ok(rows)
+}
+
+/// Read `qty` raw words starting at `start` from a live client session, over
+/// function code `fc` (1=coils, 2=discrete inputs, 3=holding, 4=input),
+/// addressed to `unit`. Reused by route-from-slave (Plan 3) so a routed
+/// register mirrors exactly what a real master would see. Coil/discrete bit
+/// results are mapped to `u16` 0/1 to keep the return type uniform. Timeout,
+/// transport, and Modbus-exception errors are all normalized to `Err(String)`.
+pub async fn route_read_words(
+    session: std::sync::Arc<tokio::sync::Mutex<tokio_modbus::client::Context>>,
+    unit: u8,
+    fc: u8,
+    start: u16,
+    qty: u16,
+    timeout_ms: u64,
+) -> Result<Vec<u16>, String> {
+    use tokio::time::timeout;
+    let mut ctx = session.lock().await;
+    ctx.set_slave(tokio_modbus::prelude::Slave(unit));
+    let dur = Duration::from_millis(timeout_ms.max(50));
+    let words = match fc {
+        3 => timeout(dur, ctx.read_holding_registers(start, qty)).await,
+        4 => timeout(dur, ctx.read_input_registers(start, qty)).await,
+        1 | 2 => {
+            let res = if fc == 1 {
+                timeout(dur, ctx.read_coils(start, qty)).await
+            } else {
+                timeout(dur, ctx.read_discrete_inputs(start, qty)).await
+            };
+            let bits = res
+                .map_err(|_| format!("route read timed out after {timeout_ms} ms"))?
+                .map_err(|e| format!("route read transport error: {e}"))?
+                .map_err(|e| format!("route read modbus exception: {e}"))?;
+            return Ok(bits.into_iter().map(|b| if b { 1u16 } else { 0u16 }).collect());
+        }
+        other => return Err(format!("unsupported route function code {other}")),
+    };
+    let out = words
+        .map_err(|_| format!("route read timed out after {timeout_ms} ms"))?
+        .map_err(|e| format!("route read transport error: {e}"))?
+        .map_err(|e| format!("route read modbus exception: {e}"))?;
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// No-op `ValuesSink` for tests: `SimEngine::start` requires a sink, but
+    /// most tests only care about server/tick bank behavior, not the emitted
+    /// event. Avoids `tauri::test::mock_app()` (see `ValuesSink` doc comment).
+    struct NoopSink;
+    impl ValuesSink for NoopSink {
+        fn emit_values(&self, _event: SimValuesEvent) {}
+    }
+
+    fn banks_with(holding: &[(u16, u16)], coils: &[(u16, bool)]) -> SimBanks {
+        let mut b = SimBanks::default();
+        for &(a, v) in holding { b.holding.insert(a, v); }
+        for &(a, v) in coils { b.coils.insert(a, v); }
+        b
+    }
+
+    #[test]
+    fn reads_configured_holding_registers() {
+        let b = banks_with(&[(257, 3), (258, 19200)], &[]);
+        assert_eq!(b.read_holding(257, 2).unwrap(), vec![3, 19200]);
+    }
+
+    #[test]
+    fn reading_an_unconfigured_address_is_illegal() {
+        let b = banks_with(&[(257, 3)], &[]);
+        assert_eq!(b.read_holding(0, 1), Err(ExceptionCode::IllegalDataAddress));
+        // partially-configured range also fails
+        assert_eq!(b.read_holding(257, 2), Err(ExceptionCode::IllegalDataAddress));
+    }
+
+    #[test]
+    fn writing_a_configured_holding_register_sticks() {
+        let mut b = banks_with(&[(10, 0)], &[]);
+        b.write_single_register(10, 1234).unwrap();
+        assert_eq!(b.read_holding(10, 1).unwrap(), vec![1234]);
+    }
+
+    #[test]
+    fn writing_an_unconfigured_register_is_illegal() {
+        let mut b = SimBanks::default();
+        assert_eq!(b.write_single_register(5, 1), Err(ExceptionCode::IllegalDataAddress));
+    }
+
+    #[test]
+    fn coils_round_trip() {
+        let mut b = banks_with(&[], &[(0, false), (1, false)]);
+        b.write_multiple_coils(0, &[true, true]).unwrap();
+        assert_eq!(b.read_coils(0, 2).unwrap(), vec![true, true]);
+    }
+
+    use std::collections::HashMap as Map;
+
+    fn two_unit_banks() -> Map<u8, SimBanks> {
+        let mut m = Map::new();
+        let mut u1 = SimBanks::default();
+        u1.holding.insert(0, 111);
+        let mut u2 = SimBanks::default();
+        u2.holding.insert(0, 222);
+        u2.holding.insert(1, 0); // writable target
+        m.insert(1, u1);
+        m.insert(2, u2);
+        m
+    }
+
+    #[tokio::test]
+    async fn serves_and_routes_by_unit_id() {
+        let mut engine = SimEngine::new();
+        // port 0 → OS-assigned ephemeral port
+        let info = engine.start(NoopSink, "ws".into(), "127.0.0.1", 0, 100, two_unit_banks(), Vec::new(), Default::default(), Default::default(), Vec::new()).await.unwrap();
+        let addr: std::net::SocketAddr = info.bound.parse().unwrap();
+
+        // Unit 1 → 111
+        let mut c1 = tokio_modbus::client::tcp::connect_slave(addr, Slave(1)).await.unwrap();
+        assert_eq!(c1.read_holding_registers(0, 1).await.unwrap().unwrap(), vec![111]);
+
+        // Unit 2 → 222, and a write sticks
+        let mut c2 = tokio_modbus::client::tcp::connect_slave(addr, Slave(2)).await.unwrap();
+        assert_eq!(c2.read_holding_registers(0, 1).await.unwrap().unwrap(), vec![222]);
+        c2.write_single_register(1, 4321).await.unwrap().unwrap();
+        assert_eq!(c2.read_holding_registers(1, 1).await.unwrap().unwrap(), vec![4321]);
+
+        // Reading an unconfigured address → Modbus exception (Err inner result)
+        assert!(c1.read_holding_registers(50, 1).await.unwrap().is_err());
+
+        engine.stop().await;
+        assert!(!engine.is_running());
+    }
+
+    #[tokio::test]
+    async fn client_count_tracks_connections() {
+        use std::time::Duration;
+        use tokio::time::sleep;
+
+        let mut engine = SimEngine::new();
+        let info = engine.start(NoopSink, "ws".into(), "127.0.0.1", 0, 100, two_unit_banks(), Vec::new(), Default::default(), Default::default(), Vec::new()).await.unwrap();
+        let addr: std::net::SocketAddr = info.bound.parse().unwrap();
+
+        // Connect one client and do a successful read to ensure the connection
+        // is fully accepted by the server.
+        let mut client = tokio_modbus::client::tcp::connect_slave(addr, Slave(1)).await.unwrap();
+        let _ = client.read_holding_registers(0, 1).await.unwrap().unwrap();
+
+        // Poll until client_count reaches 1 (accept is async, slightly after connect).
+        let mut count = 0usize;
+        for _ in 0..20 {
+            count = engine.client_count();
+            if count == 1 {
+                break;
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+        assert_eq!(count, 1, "expected 1 active connection after connect");
+
+        // Drop the client to close the TCP connection.
+        drop(client);
+
+        // Poll until client_count returns to 0 (Drop fires when per-connection task ends).
+        for _ in 0..20 {
+            if engine.client_count() == 0 {
+                break;
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+        assert_eq!(engine.client_count(), 0, "expected 0 active connections after disconnect");
+
+        engine.stop().await;
+    }
+
+    use crate::models::{SimConfig, SimDevice, SimRegister};
+    use rusqlite::Connection;
+
+    fn mem_db() -> Connection {
+        let c = Connection::open_in_memory().unwrap();
+        create_sim_schema(&c).unwrap();
+        c
+    }
+
+    #[test]
+    fn config_round_trips_with_defaults() {
+        let c = mem_db();
+        let cfg = db_get_config(&c).unwrap();
+        assert_eq!(cfg.port, 502);
+        assert_eq!(cfg.host, "0.0.0.0");
+        assert!(!cfg.enabled);
+
+        db_set_config(&c, &SimConfig { enabled: true, host: "127.0.0.1".into(), port: 5502, tick_ms: 100 }).unwrap();
+        let cfg = db_get_config(&c).unwrap();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.port, 5502);
+        assert_eq!(cfg.host, "127.0.0.1");
+    }
+
+    #[test]
+    fn register_crud_round_trips() {
+        let c = mem_db();
+        let id = db_insert_register(&c, &SimRegister {
+            id: 0, unit_id: 1, function_code: 3, address: 257,
+            alias: "Device addr".into(), data_type: "u16".into(), hold_value: 3, sort_order: 0,
+            device_instance_id: None,
+            value_source: "hold".into(), byte_order: "ABCD".into(), source_params: "{}".into(), interval_ms: 1000,
+        }).unwrap();
+        let mut rows = db_list_registers(&c).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].hold_value, 3);
+
+        rows[0].hold_value = 7;
+        db_update_register(&c, &rows[0]).unwrap();
+        assert_eq!(db_list_registers(&c).unwrap()[0].hold_value, 7);
+
+        db_delete_register(&c, id).unwrap();
+        assert!(db_list_registers(&c).unwrap().is_empty());
+    }
+
+    #[test]
+    fn register_crud_round_trips_source_fields() {
+        let c = mem_db();
+        let id = db_insert_register(&c, &SimRegister {
+            id: 0, unit_id: 1, function_code: 4, address: 10,
+            alias: "temp".into(), data_type: "f32".into(), hold_value: 0,
+            value_source: "device".into(), byte_order: "CDAB".into(),
+            source_params: "{\"preset\":\"temperature\",\"min\":20,\"max\":30}".into(),
+            interval_ms: 500, sort_order: 0, device_instance_id: None,
+        }).unwrap();
+        let rows = db_list_registers(&c).unwrap();
+        let r = rows.iter().find(|r| r.id == id).unwrap();
+        assert_eq!(r.value_source, "device");
+        assert_eq!(r.byte_order, "CDAB");
+        assert_eq!(r.interval_ms, 500);
+        assert!(r.source_params.contains("temperature"));
+    }
+
+    #[test]
+    fn rule_crud_round_trips() {
+        let c = mem_db();
+        let id = db_insert_rule(&c, &SimRule {
+            id: 0, name: "trip".into(), enabled: true,
+            trigger: "{\"type\":\"interval\",\"ms\":1000}".into(),
+            actions: "[{\"type\":\"toggle\",\"unit\":1,\"bank\":1,\"address\":0}]".into(),
+            sort_order: 0,
+        }).unwrap();
+        let mut rows = db_list_rules(&c).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "trip");
+        rows[0].enabled = false;
+        db_update_rule(&c, &rows[0]).unwrap();
+        assert!(!db_list_rules(&c).unwrap()[0].enabled);
+        db_delete_rule(&c, id).unwrap();
+        assert!(db_list_rules(&c).unwrap().is_empty());
+    }
+
+    #[test]
+    fn parses_a_rule() {
+        let r = SimRule {
+            id: 5, name: "x".into(), enabled: true,
+            trigger: "{\"type\":\"condition\",\"unit\":1,\"bank\":3,\"address\":0,\"op\":\">=\",\"value\":100}".into(),
+            actions: "[{\"type\":\"set\",\"unit\":1,\"bank\":1,\"address\":0,\"value\":1},{\"type\":\"inc\",\"unit\":1,\"bank\":3,\"address\":2,\"by\":5}]".into(),
+            sort_order: 0,
+        };
+        let d = parse_rule(&r).unwrap();
+        assert!(matches!(d.trigger, Trigger::Condition { value: 100, .. }));
+        assert_eq!(d.actions.len(), 2);
+        // disabled → None
+        let off = SimRule { enabled: false, ..r.clone() };
+        assert!(parse_rule(&off).is_none());
+    }
+
+    fn banks1(pairs: &[(u8, u8, u16, u16)]) -> HashMap<u8, SimBanks> {
+        let mut m = HashMap::new();
+        for &(u, b, a, v) in pairs { place_words(&mut m, u, b, a, &[v]); }
+        m
+    }
+
+    fn rule(id: i64, trig: Trigger, acts: Vec<Action>) -> RuleDef {
+        RuleDef { id, enabled: true, trigger: trig, actions: acts, sort_order: id }
+    }
+    #[test]
+    fn interval_fires_each_period() {
+        let rules = vec![rule(1, Trigger::Interval { ms: 100.0 }, vec![Action::Toggle{unit:1,bank:1,address:0}])];
+        let mut st = HashMap::new();
+        let b = HashMap::new();
+        assert_eq!(eval_rules(&rules, &mut st, &b, 0.0, &[]).len(), 1);   // due at t=0
+        assert_eq!(eval_rules(&rules, &mut st, &b, 50.0, &[]).len(), 0);  // not yet
+        assert_eq!(eval_rules(&rules, &mut st, &b, 100.0, &[]).len(), 1); // next period
+    }
+    #[test]
+    fn condition_is_edge_fired() {
+        let rules = vec![rule(1, Trigger::Condition{unit:1,bank:3,address:0,op:">=".into(),value:100}, vec![Action::Set{unit:1,bank:1,address:0,value:1}])];
+        let mut st = HashMap::new();
+        let below = banks1(&[(1,3,0,50)]);
+        let above = banks1(&[(1,3,0,150)]);
+        assert_eq!(eval_rules(&rules, &mut st, &below, 0.0, &[]).len(), 0);   // false
+        assert_eq!(eval_rules(&rules, &mut st, &above, 10.0, &[]).len(), 1);  // false→true edge
+        assert_eq!(eval_rules(&rules, &mut st, &above, 20.0, &[]).len(), 0);  // stays true, no re-fire
+    }
+    #[test]
+    fn changed_fires_on_each_change() {
+        let rules = vec![rule(1, Trigger::Condition{unit:1,bank:3,address:0,op:"changed".into(),value:0}, vec![Action::Inc{unit:1,bank:3,address:1,by:1}])];
+        let mut st = HashMap::new();
+        let v10 = banks1(&[(1,3,0,10)]);
+        let v20 = banks1(&[(1,3,0,20)]);
+        let v30 = banks1(&[(1,3,0,30)]);
+        assert_eq!(eval_rules(&rules, &mut st, &v10, 0.0, &[]).len(), 0);  // first observation, no prior
+        assert_eq!(eval_rules(&rules, &mut st, &v20, 10.0, &[]).len(), 1); // 10 -> 20: fires
+        assert_eq!(eval_rules(&rules, &mut st, &v20, 20.0, &[]).len(), 0); // unchanged: no fire
+        assert_eq!(eval_rules(&rules, &mut st, &v30, 30.0, &[]).len(), 1); // 20 -> 30: fires
+    }
+    #[test]
+    fn on_write_matches_drained_write() {
+        let rules = vec![rule(1, Trigger::OnWrite{unit:1,bank:3,address:Some(5)}, vec![Action::Inc{unit:1,bank:3,address:6,by:1}])];
+        let mut st = HashMap::new();
+        let b = HashMap::new();
+        assert_eq!(eval_rules(&rules, &mut st, &b, 0.0, &[(1,3,5)]).len(), 1);
+        assert_eq!(eval_rules(&rules, &mut st, &b, 0.0, &[(1,3,9)]).len(), 0);
+    }
+
+    #[test]
+    fn action_set_inc_toggle() {
+        let mut b = banks1(&[(1, 3, 0, 10), (1, 1, 0, 0)]);
+        apply_action(&mut b, &Action::Set { unit: 1, bank: 3, address: 0, value: 42 }, 0);
+        assert_eq!(read_word(&b, 1, 3, 0), Some(42));
+        apply_action(&mut b, &Action::Inc { unit: 1, bank: 3, address: 0, by: 8 }, 0);
+        assert_eq!(read_word(&b, 1, 3, 0), Some(50));
+        apply_action(&mut b, &Action::Toggle { unit: 1, bank: 1, address: 0 }, 0);
+        assert_eq!(read_word(&b, 1, 1, 0), Some(1));
+    }
+
+    #[test]
+    fn action_copy_with_scale_offset() {
+        let mut b = banks1(&[(1, 3, 0, 10), (1, 3, 1, 0)]);
+        apply_action(&mut b, &Action::Copy {
+            src_unit: 1, src_bank: 3, src_addr: 0, unit: 1, bank: 3, address: 1, scale: 2.0, offset: 1.0,
+        }, 0);
+        assert_eq!(read_word(&b, 1, 3, 1), Some(21)); // 10*2+1
+    }
+
+    #[test]
+    fn action_inc_wraps() {
+        let mut b = banks1(&[(1, 3, 0, 0xFFFF)]);
+        apply_action(&mut b, &Action::Inc { unit: 1, bank: 3, address: 0, by: 2 }, 0);
+        assert_eq!(read_word(&b, 1, 3, 0), Some(1)); // wraps
+    }
+
+    #[test]
+    fn builds_banks_grouped_by_unit_and_function() {
+        let regs = vec![
+            SimRegister { id: 1, unit_id: 1, function_code: 3, address: 257, alias: "".into(), data_type: "u16".into(), hold_value: 3, sort_order: 0, device_instance_id: None, value_source: "hold".into(), byte_order: "ABCD".into(), source_params: "{}".into(), interval_ms: 1000 },
+            SimRegister { id: 2, unit_id: 1, function_code: 4, address: 1, alias: "".into(), data_type: "u16".into(), hold_value: 250, sort_order: 0, device_instance_id: None, value_source: "hold".into(), byte_order: "ABCD".into(), source_params: "{}".into(), interval_ms: 1000 },
+            SimRegister { id: 3, unit_id: 2, function_code: 1, address: 0, alias: "".into(), data_type: "bool".into(), hold_value: 1, sort_order: 0, device_instance_id: None, value_source: "hold".into(), byte_order: "ABCD".into(), source_params: "{}".into(), interval_ms: 1000 },
+        ];
+        let banks = registers_to_banks(&regs);
+        assert_eq!(banks.get(&1).unwrap().holding.get(&257), Some(&3));
+        assert_eq!(banks.get(&1).unwrap().input.get(&1), Some(&250));
+        assert_eq!(banks.get(&2).unwrap().coils.get(&0), Some(&true));
+    }
+
+    #[test]
+    fn i16_negative_stored_as_twos_complement_word() {
+        let regs = vec![
+            SimRegister { id: 1, unit_id: 1, function_code: 3, address: 0, alias: "".into(), data_type: "i16".into(), hold_value: -1, sort_order: 0, device_instance_id: None, value_source: "hold".into(), byte_order: "ABCD".into(), source_params: "{}".into(), interval_ms: 1000 },
+        ];
+        let banks = registers_to_banks(&regs);
+        assert_eq!(banks.get(&1).unwrap().holding.get(&0), Some(&0xFFFF));
+    }
+
+    #[test]
+    fn encodes_single_word_types() {
+        assert_eq!(encode_value("u16", "ABCD", 300.0).unwrap(), vec![0x012C]);
+        assert_eq!(encode_value("u16", "BADC", 300.0).unwrap(), vec![0x2C01]); // byte swap
+        assert_eq!(encode_value("i16", "ABCD", -1.0).unwrap(), vec![0xFFFF]);
+    }
+
+    #[test]
+    fn encodes_u32_all_orders() {
+        let v = 0x1234_5678u32 as f64;
+        assert_eq!(encode_value("u32", "ABCD", v).unwrap(), vec![0x1234, 0x5678]);
+        assert_eq!(encode_value("u32", "BADC", v).unwrap(), vec![0x3412, 0x7856]);
+        assert_eq!(encode_value("u32", "CDAB", v).unwrap(), vec![0x5678, 0x1234]);
+        assert_eq!(encode_value("u32", "DCBA", v).unwrap(), vec![0x7856, 0x3412]);
+    }
+
+    #[test]
+    fn encodes_f32_all_orders() {
+        assert_eq!(encode_value("f32", "ABCD", 1.0).unwrap(), vec![0x3F80, 0x0000]);
+        assert_eq!(encode_value("f32", "CDAB", 1.0).unwrap(), vec![0x0000, 0x3F80]);
+        assert_eq!(encode_value("f32", "BADC", 1.0).unwrap(), vec![0x803F, 0x0000]);
+        assert_eq!(encode_value("f32", "DCBA", 1.0).unwrap(), vec![0x0000, 0x803F]);
+    }
+
+    #[test]
+    fn word_count_matches_type() {
+        assert_eq!(word_count("u16"), 1);
+        assert_eq!(word_count("i16"), 1);
+        assert_eq!(word_count("f32"), 2);
+        assert_eq!(word_count("u32"), 2);
+    }
+
+    #[test]
+    fn encode_rejects_unsupported() {
+        assert!(encode_value("f64", "ABCD", 1.0).is_err());
+        assert!(encode_value("u16", "CDAB", 1.0).is_err()); // word-swap invalid for 1-word
+    }
+
+    #[test]
+    fn sine_stays_in_range_and_varies() {
+        let p = GenParams { min: 0.0, max: 100.0, period_ms: 1000.0 };
+        let a = generator_value("sine", &p, 0.0, 0);
+        let b = generator_value("sine", &p, 250.0, 0); // quarter period → peak
+        assert!((a - 50.0).abs() < 1e-6);   // sine starts mid-range
+        assert!((b - 100.0).abs() < 1e-6);  // quarter period → max
+        for t in [0.0, 123.0, 500.0, 999.0] {
+            let v = generator_value("sine", &p, t, 0);
+            assert!(v >= 0.0 && v <= 100.0);
+        }
+    }
+
+    #[test]
+    fn ramp_is_sawtooth() {
+        let p = GenParams { min: 0.0, max: 10.0, period_ms: 1000.0 };
+        assert!((generator_value("ramp", &p, 0.0, 0) - 0.0).abs() < 1e-6);
+        assert!((generator_value("ramp", &p, 500.0, 0) - 5.0).abs() < 1e-6);
+        assert!(generator_value("ramp", &p, 1000.0, 0) < 1e-6); // wraps to 0
+    }
+
+    #[test]
+    fn random_in_range_and_deterministic() {
+        let p = GenParams { min: 5.0, max: 6.0, period_ms: 0.0 };
+        let v1 = generator_value("random", &p, 0.0, 42);
+        let v2 = generator_value("random", &p, 0.0, 42);
+        assert_eq!(v1, v2);
+        assert!(v1 >= 5.0 && v1 <= 6.0);
+    }
+
+    #[test]
+    fn toggle_is_binary_by_half_period() {
+        let p = GenParams { min: 0.0, max: 1.0, period_ms: 1000.0 };
+        assert_eq!(generator_value("toggle", &p, 100.0, 0), 1.0); // first half
+        assert_eq!(generator_value("toggle", &p, 600.0, 0), 0.0); // second half
+    }
+
+    #[test]
+    fn presets_stay_within_range() {
+        let p = PresetParams { min: 20.0, max: 30.0, period_ms: 60000.0 };
+        for preset in ["temperature", "humidity", "pressure", "flow", "vibration", "analog"] {
+            for t in [0.0, 1000.0, 30000.0, 59000.0] {
+                let v = preset_value(preset, &p, t);
+                assert!(v >= 20.0 && v <= 30.0, "{preset} out of range at {t}: {v}");
+            }
+        }
+    }
+
+    #[test]
+    fn discrete_is_binary() {
+        let p = PresetParams { min: 0.0, max: 1.0, period_ms: 1000.0 };
+        let v = preset_value("discrete", &p, 100.0);
+        assert!(v == 0.0 || v == 1.0);
+    }
+
+    #[test]
+    fn counter_is_monotonic_nondecreasing() {
+        let p = PresetParams { min: 0.0, max: 1000.0, period_ms: 1000.0 };
+        // Two non-wrapping samples within the same period: the sawtooth must
+        // strictly rise between them (previously t=1000 & t=5000 both wrap to
+        // 0, so the old assertion `b >= a` passed trivially without proving
+        // the ramp actually rises within a period).
+        let a = preset_value("counter", &p, 500.0);
+        let b = preset_value("counter", &p, 600.0);
+        assert!(b > a, "expected counter to rise within a period: a={a} b={b}");
+
+        // Wrap check: a full period later, value returns to (approximately) min.
+        let wrapped = preset_value("counter", &p, 1500.0);
+        assert!((wrapped - a).abs() < 1e-6, "expected wrap back to same phase: a={a} wrapped={wrapped}");
+    }
+
+    #[test]
+    fn preset_varies_over_time() {
+        let p = PresetParams { min: 0.0, max: 100.0, period_ms: 10000.0 };
+        let a = preset_value("temperature", &p, 0.0);
+        let b = preset_value("temperature", &p, 2500.0);
+        assert!((a - b).abs() > 1e-6);
+    }
+
+    #[test]
+    fn parses_generator_and_device_registers() {
+        let gen = SimRegister {
+            id: 1, unit_id: 1, function_code: 4, address: 0, alias: "".into(), data_type: "f32".into(),
+            hold_value: 0, value_source: "generator".into(), byte_order: "ABCD".into(),
+            source_params: "{\"kind\":\"sine\",\"min\":0,\"max\":100,\"periodMs\":1000}".into(),
+            interval_ms: 100, sort_order: 0, device_instance_id: None,
+        };
+        let d = parse_dynamic(&gen).unwrap();
+        assert_eq!(d.address, 0);
+        assert!(matches!(d.kind, DynKind::Generator { .. }));
+
+        let hold = SimRegister { value_source: "hold".into(), ..gen.clone() };
+        assert!(parse_dynamic(&hold).is_none());
+    }
+
+    #[test]
+    fn parses_route_registers() {
+        let reg = SimRegister {
+            id: 1, unit_id: 2, function_code: 3, address: 100, alias: "".into(), data_type: "f32".into(),
+            hold_value: 0, value_source: "route".into(), byte_order: "ABCD".into(),
+            source_params: "{\"slaveUnitId\":7,\"connectionKind\":\"tcp\",\"functionCode\":4,\"address\":1}".into(),
+            interval_ms: 500, sort_order: 0, device_instance_id: None,
+        };
+        let d = parse_dynamic(&reg).unwrap();
+        match d.kind {
+            DynKind::Route { slave_unit, connection_kind, src_fc, src_addr, count } => {
+                assert_eq!(slave_unit, 7);
+                assert_eq!(connection_kind, "tcp");
+                assert_eq!(src_fc, 4);
+                assert_eq!(src_addr, 1);
+                assert_eq!(count, 2); // f32 → 2 words
+            }
+            _ => panic!("expected Route"),
+        }
+        assert!(validate_register(&reg).is_ok());
+    }
+
+    #[test]
+    fn multi_word_register_occupies_two_addresses() {
+        let reg = SimRegister {
+            id: 1, unit_id: 1, function_code: 3, address: 10, alias: "".into(), data_type: "f32".into(),
+            hold_value: 0, value_source: "generator".into(), byte_order: "ABCD".into(),
+            source_params: "{\"kind\":\"ramp\",\"min\":0,\"max\":10,\"periodMs\":1000}".into(),
+            interval_ms: 100, sort_order: 0, device_instance_id: None,
+        };
+        let banks = registers_to_banks(&[reg]);
+        let h = &banks.get(&1).unwrap().holding;
+        assert!(h.contains_key(&10) && h.contains_key(&11)); // f32 → 2 words
+    }
+
+    #[test]
+    fn validate_accepts_plan2_types_and_sources() {
+        let ok = SimRegister {
+            id: 0, unit_id: 1, function_code: 3, address: 0, alias: "".into(), data_type: "u32".into(),
+            hold_value: 0, value_source: "generator".into(), byte_order: "CDAB".into(),
+            source_params: "{}".into(), interval_ms: 100, sort_order: 0, device_instance_id: None,
+        };
+        assert!(validate_register(&ok).is_ok());
+        let bad = SimRegister { data_type: "f64".into(), ..ok.clone() };
+        assert!(validate_register(&bad).is_err());
+    }
+
+    #[test]
+    fn rejects_bool_for_dynamic_sources() {
+        let base = SimRegister {
+            id: 0, unit_id: 1, function_code: 1, address: 0, alias: "".into(), data_type: "bool".into(),
+            hold_value: 0, value_source: "generator".into(), byte_order: "ABCD".into(),
+            source_params: "{}".into(), interval_ms: 100, sort_order: 0, device_instance_id: None,
+        };
+        assert!(validate_register(&base).is_err());
+        let device = SimRegister { value_source: "device".into(), ..base.clone() };
+        assert!(validate_register(&device).is_err());
+        let hold = SimRegister { value_source: "hold".into(), ..base.clone() };
+        assert!(validate_register(&hold).is_ok());
+    }
+
+    #[tokio::test]
+    async fn tick_updates_a_generator_register_over_time() {
+        // a ramp on input register (unit 1, addr 0), f32, fast period
+        let reg = SimRegister {
+            id: 1, unit_id: 1, function_code: 4, address: 0, alias: "".into(), data_type: "f32".into(),
+            hold_value: 0, value_source: "generator".into(), byte_order: "ABCD".into(),
+            source_params: "{\"kind\":\"ramp\",\"min\":0,\"max\":100,\"periodMs\":1000}".into(),
+            interval_ms: 50, sort_order: 0, device_instance_id: None,
+        };
+        let banks = registers_to_banks(&[reg.clone()]);
+        let dynamics: Vec<DynReg> = [reg].iter().filter_map(parse_dynamic).collect();
+
+        let mut engine = SimEngine::new();
+        let info = engine.start(NoopSink, "ws".into(), "127.0.0.1", 0, 100, banks, dynamics, Default::default(), Default::default(), Vec::new()).await.unwrap();
+        let addr: std::net::SocketAddr = info.bound.parse().unwrap();
+
+        let mut client = tokio_modbus::client::tcp::connect_slave(addr, tokio_modbus::prelude::Slave(1)).await.unwrap();
+        let first = client.read_input_registers(0, 2).await.unwrap().unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let later = client.read_input_registers(0, 2).await.unwrap().unwrap();
+        assert_ne!(first, later, "generator value should change over ~300ms");
+        engine.stop().await;
+    }
+
+    /// Recording `ValuesSink` for tests that need to assert on the emitted
+    /// `simulator_values` payload (as opposed to `NoopSink`, which discards it).
+    #[derive(Clone)]
+    struct RecordingSink(std::sync::Arc<std::sync::Mutex<Vec<SimValuesEvent>>>);
+    impl ValuesSink for RecordingSink {
+        fn emit_values(&self, event: SimValuesEvent) {
+            self.0.lock().unwrap().push(event);
+        }
+    }
+
+    #[tokio::test]
+    async fn tick_emits_values_events() {
+        // a ramp on input register (unit 1, addr 0), f32, fast period — same
+        // shape as `tick_updates_a_generator_register_over_time`.
+        let reg = SimRegister {
+            id: 1, unit_id: 1, function_code: 4, address: 0, alias: "".into(), data_type: "f32".into(),
+            hold_value: 0, value_source: "generator".into(), byte_order: "ABCD".into(),
+            source_params: "{\"kind\":\"ramp\",\"min\":0,\"max\":100,\"periodMs\":1000}".into(),
+            interval_ms: 50, sort_order: 0, device_instance_id: None,
+        };
+        let banks = registers_to_banks(&[reg.clone()]);
+        let dynamics: Vec<DynReg> = [reg].iter().filter_map(parse_dynamic).collect();
+
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = RecordingSink(events.clone());
+
+        let mut engine = SimEngine::new();
+        engine.start(sink, "ws".into(), "127.0.0.1", 0, 100, banks, dynamics, Default::default(), Default::default(), Vec::new()).await.unwrap();
+
+        // The tick loop throttles emits to every ~250ms; wait long enough for
+        // at least one to fire.
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+        engine.stop().await;
+
+        let recorded = events.lock().unwrap();
+        assert!(!recorded.is_empty(), "expected at least one simulator_values event");
+        assert!(
+            recorded.iter().any(|e| e.workspace == "ws" && !e.rows.is_empty()),
+            "expected an event for workspace 'ws' with non-empty rows"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_words_and_clear_span_handle_multiword() {
+        // `apply_words`/`clear_span` need `self.banks` to exist, which is only
+        // set up by `start`. Use an empty initial map + NoopSink (like the
+        // other tick tests) so we exercise them through the public API.
+        let mut engine = SimEngine::new();
+        engine.start(NoopSink, "ws".into(), "127.0.0.1", 0, 100, HashMap::new(), Vec::new(), Default::default(), Default::default(), Vec::new()).await.unwrap();
+
+        // Place a 2-word span (unit 1, holding bank, addr 10).
+        engine.apply_words(1, 3, 10, &[0x1234, 0x5678]);
+        let snap = engine.snapshot();
+        let holding = &snap.get(&1).unwrap().holding;
+        assert_eq!(holding.get(&10), Some(&0x1234));
+        assert_eq!(holding.get(&11), Some(&0x5678));
+
+        // Clearing the span removes both addresses.
+        engine.clear_span(1, 3, 10, 2);
+        let snap = engine.snapshot();
+        let holding = &snap.get(&1).unwrap().holding;
+        assert!(!holding.contains_key(&10));
+        assert!(!holding.contains_key(&11));
+
+        engine.stop().await;
+    }
+
+    #[tokio::test]
+    async fn route_read_words_reads_live_registers() {
+        // source server: unit 7 holding[0..2] = [111, 222]
+        let mut src = SimEngine::new();
+        let mut banks = HashMap::new();
+        let mut b = SimBanks::default();
+        b.holding.insert(0, 111);
+        b.holding.insert(1, 222);
+        banks.insert(7u8, b);
+        let info = src.start(NoopSink, "ws".into(), "127.0.0.1", 0, 100, banks, Vec::new(), Default::default(), Default::default(), Vec::new()).await.unwrap();
+        let addr: std::net::SocketAddr = info.bound.parse().unwrap();
+
+        // a client Context wrapped like ModbusState stores it
+        let ctx = tokio_modbus::client::tcp::connect(addr).await.unwrap();
+        let session = std::sync::Arc::new(tokio::sync::Mutex::new(ctx));
+
+        let words = route_read_words(session.clone(), 7, 3, 0, 2, 1000).await.unwrap();
+        assert_eq!(words, vec![111, 222]);
+
+        // unconfigured address → Err (Modbus exception), not a panic
+        assert!(route_read_words(session, 7, 3, 50, 1, 1000).await.is_err());
+        src.stop().await;
+    }
+
+    #[tokio::test]
+    async fn route_mirrors_a_live_source_over_the_tick() {
+        use crate::modbus::SessionMap;
+
+        // SOURCE device: engine A, unit 7, holding[0]=1234
+        let mut a = SimEngine::new();
+        let mut abanks = HashMap::new();
+        let mut ab = SimBanks::default();
+        ab.holding.insert(0, 1234);
+        abanks.insert(7u8, ab);
+        let ainfo = a.start(NoopSink, "src".into(), "127.0.0.1", 0, 100, abanks, Vec::new(), Default::default(), Default::default(), Vec::new()).await.unwrap();
+        let aaddr: std::net::SocketAddr = ainfo.bound.parse().unwrap();
+
+        // Put a client session to A into a SessionMap keyed by workspace "ws"
+        let tcp_map: SessionMap = Default::default();
+        {
+            let ctx = tokio_modbus::client::tcp::connect(aaddr).await.unwrap();
+            tcp_map.lock().unwrap().insert("ws".to_string(), std::sync::Arc::new(tokio::sync::Mutex::new(ctx)));
+        }
+        let rtu_map: SessionMap = Default::default();
+
+        // ROUTE: engine B, unit 1 holding[0] mirrors A unit7 holding[0]
+        let route = DynReg {
+            unit: 1, bank: 3, address: 0, data_type: "u16".into(), byte_order: "ABCD".into(), interval_ms: 50.0,
+            kind: DynKind::Route { slave_unit: 7, connection_kind: "tcp".into(), src_fc: 3, src_addr: 0, count: 1 },
+        };
+        let mut b = SimEngine::new();
+        let binfo = b.start(NoopSink, "ws".into(), "127.0.0.1", 0, 100, HashMap::new(), vec![route], tcp_map, rtu_map, Vec::new()).await.unwrap();
+        let baddr: std::net::SocketAddr = binfo.bound.parse().unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let mut client = tokio_modbus::client::tcp::connect_slave(baddr, tokio_modbus::prelude::Slave(1)).await.unwrap();
+        let got = client.read_holding_registers(0, 1).await.unwrap().unwrap();
+        assert_eq!(got, vec![1234], "route register should mirror the source value");
+
+        b.stop().await;
+        a.stop().await;
+    }
+
+    #[tokio::test]
+    async fn rule_sets_coil_when_condition_true() {
+        // holding[0]=150 (Hold), coil[0]=0; rule: when holding[0] >= 100 → set coil[0]=1
+        let mut banks = HashMap::new();
+        place_words(&mut banks, 1, 3, 0, &[150]);
+        place_words(&mut banks, 1, 1, 0, &[0]);
+        let rules = vec![RuleDef {
+            id: 1, enabled: true, sort_order: 0,
+            trigger: Trigger::Condition { unit: 1, bank: 3, address: 0, op: ">=".into(), value: 100 },
+            actions: vec![Action::Set { unit: 1, bank: 1, address: 0, value: 1 }],
+        }];
+        let mut engine = SimEngine::new();
+        // match the REAL start signature; rules is the new trailing arg
+        let info = engine.start(NoopSink, "ws".into(), "127.0.0.1", 0, 100, banks, Vec::new(), Default::default(), Default::default(), rules).await.unwrap();
+        let addr: std::net::SocketAddr = info.bound.parse().unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        let mut c = tokio_modbus::client::tcp::connect_slave(addr, tokio_modbus::prelude::Slave(1)).await.unwrap();
+        assert_eq!(c.read_coils(0, 1).await.unwrap().unwrap(), vec![true]);
+        engine.stop().await;
+    }
+
+    #[test]
+    fn device_crud_cascades_registers() {
+        let c = mem_db();
+        let id = db_insert_device(&c, &SimDevice {
+            id: 0, template_key: "temp".into(), name: "Sensor A".into(),
+            unit_id: 1, base_address: 0, enabled: true, sort_order: 0,
+        }).unwrap();
+        // a child register
+        db_insert_register(&c, &SimRegister {
+            id: 0, unit_id: 1, function_code: 4, address: 0, alias: "t".into(),
+            data_type: "u16".into(), hold_value: 0, value_source: "device".into(),
+            byte_order: "ABCD".into(), source_params: "{}".into(), interval_ms: 1000, sort_order: 0,
+            device_instance_id: None,
+        }).unwrap();
+        // link it (device_instance_id) — set directly
+        c.execute("UPDATE sim_registers SET device_instance_id = ?1", [id]).unwrap();
+
+        assert_eq!(db_list_devices(&c).unwrap().len(), 1);
+        db_delete_device(&c, id).unwrap();
+        assert!(db_list_devices(&c).unwrap().is_empty());
+        assert!(db_list_registers(&c).unwrap().is_empty(), "child registers should be cascaded");
+    }
+
+    #[test]
+    fn device_instance_id_round_trips() {
+        let c = mem_db();
+        let device_id = db_insert_device(&c, &SimDevice {
+            id: 0, template_key: "temp".into(), name: "Sensor A".into(),
+            unit_id: 1, base_address: 0, enabled: true, sort_order: 0,
+        }).unwrap();
+        db_insert_register(&c, &SimRegister {
+            id: 0, unit_id: 1, function_code: 4, address: 0, alias: "t".into(),
+            data_type: "u16".into(), hold_value: 0, value_source: "device".into(),
+            byte_order: "ABCD".into(), source_params: "{}".into(), interval_ms: 1000, sort_order: 0,
+            device_instance_id: None,
+        }).unwrap();
+        c.execute("UPDATE sim_registers SET device_instance_id = ?1", [device_id]).unwrap();
+
+        let rows = db_list_registers(&c).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].device_instance_id, Some(device_id), "read path must carry device_instance_id");
+    }
+
+    #[test]
+    fn builtin_catalog_is_valid() {
+        let cat = builtin_templates();
+        assert!(cat.len() >= 6);
+        // keys unique
+        let mut keys: Vec<&str> = cat.iter().map(|t| t.template_key.as_str()).collect();
+        keys.sort();
+        let n = keys.len();
+        keys.dedup();
+        assert_eq!(keys.len(), n, "template keys must be unique");
+        // every register has a valid bank + non-empty type; the temp/humidity sensor exists
+        assert!(find_template("temp_humidity").is_some());
+        for t in &cat {
+            assert!(!t.registers.is_empty(), "{} has no registers", t.template_key);
+            for r in &t.registers {
+                assert!((1..=4).contains(&r.bank));
+                assert!(!r.data_type.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn template_to_registers_offsets_and_addresses() {
+        let t = find_template("temp_humidity").unwrap();
+        let regs = template_to_registers(&t, 3, 100);
+        assert_eq!(regs.len(), 2);
+        assert_eq!(regs[0].unit_id, 3);
+        assert_eq!(regs[0].function_code, 4);
+        assert_eq!(regs[0].address, 100); // base 100 + offset 0
+        assert_eq!(regs[1].address, 101); // offset 1
+        assert_eq!(regs[0].value_source, "device");
+    }
+
+    #[test]
+    fn overlap_is_rejected() {
+        let existing = vec![SimRegister { id:1, unit_id:1, function_code:3, address:5, alias:"".into(), data_type:"u16".into(), hold_value:0, value_source:"hold".into(), byte_order:"ABCD".into(), source_params:"{}".into(), interval_ms:1000, sort_order:0, device_instance_id: None }];
+        let new = vec![SimRegister { id:0, unit_id:1, function_code:3, address:5, alias:"".into(), data_type:"u16".into(), hold_value:0, value_source:"hold".into(), byte_order:"ABCD".into(), source_params:"{}".into(), interval_ms:1000, sort_order:0, device_instance_id: None }];
+        assert!(validate_no_overlap(&existing, &new).is_err());
+        let free = vec![SimRegister { address:6, ..new[0].clone() }];
+        assert!(validate_no_overlap(&existing, &free).is_ok());
+    }
+
+    #[test]
+    fn multi_word_overlap_is_detected() {
+        let existing = vec![SimRegister { id:1, unit_id:1, function_code:3, address:101, alias:"".into(), data_type:"u16".into(), hold_value:0, value_source:"hold".into(), byte_order:"ABCD".into(), source_params:"{}".into(), interval_ms:1000, sort_order:0, device_instance_id: None }];
+        // f32 at address 100 spans 100-101, colliding with the existing register at 101.
+        let overlapping = vec![SimRegister { id:0, unit_id:1, function_code:3, address:100, alias:"".into(), data_type:"f32".into(), hold_value:0, value_source:"hold".into(), byte_order:"ABCD".into(), source_params:"{}".into(), interval_ms:1000, sort_order:0, device_instance_id: None }];
+        assert!(validate_no_overlap(&existing, &overlapping).is_err());
+
+        // f32 at address 102 spans 102-103, which is free.
+        let free = vec![SimRegister { address:102, ..overlapping[0].clone() }];
+        assert!(validate_no_overlap(&existing, &free).is_ok());
+    }
+
+    #[test]
+    fn rebase_shifts_child_addresses() {
+        // pure helper: given child regs + old base + new base, produce shifted regs; error on out-of-range
+        let children = vec![
+            SimRegister { id:1, unit_id:1, function_code:4, address:100, alias:"".into(), data_type:"u16".into(), hold_value:0, value_source:"device".into(), byte_order:"ABCD".into(), source_params:"{}".into(), interval_ms:1000, sort_order:0, device_instance_id: None },
+            SimRegister { id:2, unit_id:1, function_code:4, address:101, alias:"".into(), data_type:"u16".into(), hold_value:0, value_source:"device".into(), byte_order:"ABCD".into(), source_params:"{}".into(), interval_ms:1000, sort_order:0, device_instance_id: None },
+        ];
+        let shifted = rebase_children(&children, 100, 200).unwrap();
+        assert_eq!(shifted[0].address, 200);
+        assert_eq!(shifted[1].address, 201);
+        assert!(rebase_children(&children, 100, 70000).is_err()); // out of u16 range
+    }
+
+    #[test]
+    fn device_rebase_updates_base_and_children_without_colliding() {
+        let c = mem_db();
+        let device_id = db_insert_device(&c, &SimDevice {
+            id: 0, template_key: "temp".into(), name: "Sensor A".into(),
+            unit_id: 1, base_address: 100, enabled: true, sort_order: 0,
+        }).unwrap();
+        let reg_id = db_insert_register(&c, &SimRegister {
+            id: 0, unit_id: 1, function_code: 4, address: 100, alias: "t".into(),
+            data_type: "u16".into(), hold_value: 0, value_source: "device".into(),
+            byte_order: "ABCD".into(), source_params: "{}".into(), interval_ms: 1000, sort_order: 0,
+            device_instance_id: None,
+        }).unwrap();
+        c.execute("UPDATE sim_registers SET device_instance_id = ?1 WHERE id = ?2", [device_id, reg_id]).unwrap();
+
+        // an unrelated, manually-added register that must NOT be disturbed
+        db_insert_register(&c, &SimRegister {
+            id: 0, unit_id: 1, function_code: 4, address: 5, alias: "other".into(),
+            data_type: "u16".into(), hold_value: 0, value_source: "hold".into(),
+            byte_order: "ABCD".into(), source_params: "{}".into(), interval_ms: 1000, sort_order: 0,
+            device_instance_id: None,
+        }).unwrap();
+
+        let device = db_list_devices(&c).unwrap().into_iter().find(|d| d.id == device_id).unwrap();
+        let children = db_list_registers_for_device(&c, device_id).unwrap();
+        let shifted = rebase_children(&children, device.base_address, 200).unwrap();
+        let others = db_list_registers_excluding_device(&c, device_id).unwrap();
+        validate_no_overlap(&others, &shifted).unwrap();
+
+        assert_eq!(others.len(), 1, "the unrelated register should not be part of this device's children");
+        assert_eq!(others[0].address, 5);
+        assert_eq!(shifted[0].address, 200);
+    }
+}
