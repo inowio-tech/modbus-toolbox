@@ -1,5 +1,6 @@
 import React from "react";
 import SectionBlock from "./SectionBlock";
+import HelpAnchorLink from "../components/HelpAnchorLink";
 import type { HelpSectionDefinition } from "../types";
 
 const workspaceSection: HelpSectionDefinition = {
@@ -53,6 +54,12 @@ const workspaceSection: HelpSectionDefinition = {
             <strong>Grid / List toggle</strong> to switch how workspaces are laid out.
           </li>
         </ul>
+        <p>
+          The top-level screen also has a <strong>Workspaces / Virtual Devices</strong> segmented toggle. “Workspaces” is
+          the project list described here; <HelpAnchorLink section="virtual-devices" anchor="overview" variant="link">Virtual Devices</HelpAnchorLink> is
+          the app-global catalog of reusable device blueprints shared across every workspace's TCP Simulator. The chosen tab
+          is remembered between sessions.
+        </p>
         <p>It is intentionally minimal—switching contexts feels instant, even when juggling dozens of workspaces.</p>
       </SectionBlock>
       <SectionBlock section="workspace" anchor="search" title="Search & filtering">

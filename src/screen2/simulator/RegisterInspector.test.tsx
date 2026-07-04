@@ -24,7 +24,7 @@ const reg: PageRegister = {
 };
 
 const devices: SimDevice[] = [
-  { id: 7, templateKey: "th", name: "Temp Sensor A", unitId: 1, baseAddress: 40001, enabled: true, sortOrder: 0 },
+  { id: 7, templateKey: "th", name: "Temp Sensor A", unitId: 1, baseAddress: 40001, sortOrder: 0 },
 ];
 
 const base = () => ({

@@ -89,7 +89,7 @@ describe("RulesTab", () => {
 
   it("resolves scope to a device name when the trigger unit maps to a device", () => {
     const r = { ...rule, trigger: JSON.stringify({ type: "condition", unit: 3, bank: 3, address: 5, op: ">", value: 60 }) };
-    const device = { id: 9, templateKey: "th", name: "Boiler", unitId: 3, baseAddress: 0, enabled: true, sortOrder: 0 };
+    const device = { id: 9, templateKey: "th", name: "Boiler", unitId: 3, baseAddress: 0, sortOrder: 0 };
     render(<RulesTab rules={[r as any]} devices={[device as any]} onAdd={vi.fn()} onEdit={vi.fn()} onToggle={vi.fn()} onDelete={vi.fn()} />);
     expect(screen.getByText("Boiler")).toBeInTheDocument();
   });

@@ -375,7 +375,7 @@ export default function WorkspaceScreen({ onOpen }: Props) {
             <button
               type="button"
               className="hidden items-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:border-emerald-500/60 hover:text-emerald-700 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:text-emerald-100 sm:inline-flex"
-              onClick={() => openHelp({ section: "overview" })}
+              onClick={() => openHelp({ section: mainTab === "devices" ? "virtual-devices" : "overview" })}
               title="Open help"
             >
               <FiBookOpen className="h-3 w-3" aria-hidden="true" />
@@ -384,7 +384,7 @@ export default function WorkspaceScreen({ onOpen }: Props) {
             <button
               type="button"
               className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-slate-300 bg-slate-100 text-slate-700 transition hover:border-slate-400 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600 sm:hidden"
-              onClick={() => openHelp({ section: "overview" })}
+              onClick={() => openHelp({ section: mainTab === "devices" ? "virtual-devices" : "overview" })}
               aria-label="Open help"
               title="Help"
             >

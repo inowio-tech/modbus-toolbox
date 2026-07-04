@@ -157,7 +157,7 @@ const virtualDevicesSection: HelpSectionDefinition = {
 
       <SectionBlock section="virtual-devices" anchor="use-in-simulator" title="Using a device in the TCP Simulator">
         <p>
-          Inside a workspace, open the <HelpAnchorLink section="simulator" anchor="device-templates">TCP Simulator</HelpAnchorLink> and click <strong>+ Add Device</strong>. The wizard lists every virtual device (built-in, custom, and workspace slaves) grouped by category. Pick one, then choose:
+          Inside a workspace, open the <HelpAnchorLink section="simulator" anchor="add-device">TCP Simulator</HelpAnchorLink> and click <strong>+ Add Device</strong>. The wizard lists every virtual device (built-in, custom, and workspace slaves) grouped by category. Pick one, then choose:
         </p>
         <ul className="list-disc space-y-1 pl-5">
           <li><strong>Unit ID</strong> — the Modbus unit the device answers as (0–255).</li>
@@ -179,7 +179,7 @@ const virtualDevicesSection: HelpSectionDefinition = {
 
       <SectionBlock section="virtual-devices" anchor="workspace-slaves" title="Expose a real slave as a device">
         <p>
-          If you already configured a device on the <HelpAnchorLink section="slaves" anchor="details">Slaves</HelpAnchorLink> page, you can expose it over the simulator in one step. In <strong>Add Device</strong>, the <strong>Workspace</strong> category lists the workspace's slaves. Adding one creates a device whose registers <strong>route</strong> to that real slave — mirroring its read registers (same address, bank, and type), using the slave's own Unit ID and connection.
+          If you already configured a device on the <HelpAnchorLink section="slaves" anchor="detail-registers">Slaves</HelpAnchorLink> page, you can expose it over the simulator in one step. In <strong>Add Device</strong>, the <strong>Workspace</strong> category lists the workspace's slaves. Adding one creates a device whose registers <strong>route</strong> to that real slave — mirroring its read registers (same address, bank, and type), using the slave's own Unit ID and connection.
         </p>
         <p>
           The result is a Modbus gateway: an external master polling the simulator reads live values coming from your physical device. The simulator opens the source connection itself when it starts, so you don't have to keep the Slaves page connected. See <HelpAnchorLink section="simulator" anchor="route-from-slave">Route from slave</HelpAnchorLink> for how routing behaves and its ok/stale/missing status.

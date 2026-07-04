@@ -2,7 +2,7 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
 import DevicesTab from "./DevicesTab";
 
-const dev = { id: 7, templateKey: "temp_humidity", name: "Temp Sensor A", unitId: 1, baseAddress: 40001, enabled: true, sortOrder: 0 };
+const dev = { id: 7, templateKey: "temp_humidity", name: "Temp Sensor A", unitId: 1, baseAddress: 40001, sortOrder: 0 };
 const base = () => ({
   devices: [dev],
   registers: [{ id: 1, deviceInstanceId: 7 } as any, { id: 2, deviceInstanceId: 7 } as any],

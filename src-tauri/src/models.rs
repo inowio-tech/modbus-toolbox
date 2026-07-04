@@ -380,8 +380,6 @@ pub struct SimDevice {
     pub unit_id: i64,
     #[serde(default)]
     pub base_address: i64,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
     #[serde(default)]
     pub sort_order: i64,
 }

@@ -1270,28 +1270,31 @@ pub fn db_delete_rule(conn: &Connection, id: i64) -> rusqlite::Result<()> {
 }
 
 pub fn db_list_devices(conn: &Connection) -> rusqlite::Result<Vec<SimDevice>> {
+    // NB: the sim_devices table still has a legacy `enabled` column (NOT NULL
+    // DEFAULT 1) that is no longer part of SimDevice — it was an inert field
+    // that nothing read. Inserts omit it and the DEFAULT keeps the row valid.
     let mut stmt = conn.prepare(
-        "SELECT id, COALESCE(template_key,''), name, unit_id, COALESCE(base_address,0), enabled, sort_order
+        "SELECT id, COALESCE(template_key,''), name, unit_id, COALESCE(base_address,0), sort_order
          FROM sim_devices ORDER BY sort_order, id",
     )?;
     let rows = stmt.query_map([], |r| Ok(SimDevice {
         id: r.get(0)?, template_key: r.get(1)?, name: r.get(2)?, unit_id: r.get(3)?,
-        base_address: r.get(4)?, enabled: r.get::<_, i64>(5)? != 0, sort_order: r.get(6)?,
+        base_address: r.get(4)?, sort_order: r.get(5)?,
     }))?;
     rows.collect()
 }
 pub fn db_insert_device(conn: &Connection, d: &SimDevice) -> rusqlite::Result<i64> {
     conn.execute(
-        "INSERT INTO sim_devices (template_key, name, unit_id, base_address, enabled, sort_order)
-         VALUES (?1,?2,?3,?4,?5,?6)",
-        rusqlite::params![d.template_key, d.name, d.unit_id, d.base_address, d.enabled as i64, d.sort_order],
+        "INSERT INTO sim_devices (template_key, name, unit_id, base_address, sort_order)
+         VALUES (?1,?2,?3,?4,?5)",
+        rusqlite::params![d.template_key, d.name, d.unit_id, d.base_address, d.sort_order],
     )?;
     Ok(conn.last_insert_rowid())
 }
 pub fn db_update_device(conn: &Connection, d: &SimDevice) -> rusqlite::Result<()> {
     conn.execute(
-        "UPDATE sim_devices SET name=?2, unit_id=?3, base_address=?4, enabled=?5, sort_order=?6 WHERE id=?1",
-        rusqlite::params![d.id, d.name, d.unit_id, d.base_address, d.enabled as i64, d.sort_order],
+        "UPDATE sim_devices SET name=?2, unit_id=?3, base_address=?4, sort_order=?5 WHERE id=?1",
+        rusqlite::params![d.id, d.name, d.unit_id, d.base_address, d.sort_order],
     )?;
     Ok(())
 }
@@ -1509,11 +1512,6 @@ pub fn builtin_templates() -> Vec<DeviceTemplate> {
             ],
         },
     ]
-}
-
-/// Look up a built-in template by key.
-pub fn find_template(key: &str) -> Option<DeviceTemplate> {
-    builtin_templates().into_iter().find(|t| t.template_key == key)
 }
 
 /// Path to the app-global custom device-template catalog (shared by every
@@ -1920,7 +1918,6 @@ fn instantiate_device(
             name: device_name,
             unit_id,
             base_address,
-            enabled: true,
             sort_order: 0,
         },
     )
@@ -1959,8 +1956,11 @@ fn instantiate_device(
 
 /// Map one slave register row to a route `TemplateRegister` that mirrors it:
 /// same bank/address/type, exposed at the same offset, reading through the
-/// slave's own connection + unit. Bit banks (coil/discrete) are forced to
-/// `bool`/`ABCD` so `validate_register` accepts them.
+/// slave's own connection + unit. Bit banks (coil/discrete) are mapped to
+/// `u16`/`ABCD` (0/1) — the convention `validate_register` requires for
+/// dynamic bit-bank registers (`bool` is reserved for Hold). The route read
+/// returns each bit as a `1`/`0` word and `place_words` collapses it back to a
+/// coil/discrete bit when served.
 fn slave_row_to_route_register(
     unit_id: i64,
     conn_kind: &str,
@@ -1983,7 +1983,7 @@ fn slave_row_to_route_register(
     TemplateRegister {
         offset: addr.clamp(0, 65535) as u16,
         bank: fc as u8,
-        data_type: if is_bit { "bool".into() } else { data_type.to_string() },
+        data_type: if is_bit { "u16".into() } else { data_type.to_string() },
         byte_order: if is_bit || order.is_empty() { "ABCD".into() } else { order.to_string() },
         value_source: "route".into(),
         source_params,
@@ -2660,6 +2660,16 @@ fn validate_register(reg: &SimRegister) -> Result<(), String> {
             reg.data_type
         ));
     }
+    // A multi-word register must fit entirely below 65535 — `place_words` uses
+    // wrapping_add, so an f64 near the top of the map would silently wrap its
+    // tail words back to address 0.
+    let span = word_count(&reg.data_type) as i64;
+    if reg.address + span - 1 > 65535 {
+        return Err(format!(
+            "register at address {} with type '{}' spans {} word(s) and would exceed the maximum address 65535",
+            reg.address, reg.data_type, span
+        ));
+    }
     if !matches!(reg.value_source.as_str(), "hold" | "device" | "generator" | "route") {
         return Err(format!(
             "unsupported value source '{}' (Plan 3: hold, device, generator, route)",
@@ -2743,6 +2753,11 @@ pub fn simulator_add_register(
     let ws = validate_workspace_name(&name)?;
     validate_register(&register)?;
     let conn = open_workspace_db(&app, &ws)?;
+    // Reject a register whose (possibly multi-word) span would overlap an
+    // existing one — the DB UNIQUE only guards the starting address, not the
+    // extra words a u32/f32/u64/f64 occupies.
+    let existing = db_list_registers(&conn).map_err(|e| e.to_string())?;
+    validate_no_overlap(&existing, std::slice::from_ref(&register))?;
     let id = db_insert_register(&conn, &register).map_err(|e| e.to_string())?;
     apply_to_running(&state, &ws, &register, false);
     refresh_running_config(&app, &state, &conn, &ws);
@@ -2760,7 +2775,19 @@ pub fn simulator_update_register(
     let ws = validate_workspace_name(&name)?;
     validate_register(&register)?;
     let conn = open_workspace_db(&app, &ws)?;
+    // Capture the pre-update footprint so we can clear any live words this edit
+    // vacates — shrinking a span (e.g. f64→u16) or moving the register would
+    // otherwise leave stale "ghost" words being served until a Stop/Start.
+    let all = db_list_registers(&conn).map_err(|e| e.to_string())?;
+    let previous = all.iter().find(|r| r.id == register.id).cloned();
+    // Reject an edit whose new span would overlap a *different* register (the
+    // DB UNIQUE only guards the starting address, not multi-word tail words).
+    let others: Vec<SimRegister> = all.into_iter().filter(|r| r.id != register.id).collect();
+    validate_no_overlap(&others, std::slice::from_ref(&register))?;
     db_update_register(&conn, &register).map_err(|e| e.to_string())?;
+    if let Some(prev) = &previous {
+        apply_to_running(&state, &ws, prev, true);
+    }
     apply_to_running(&state, &ws, &register, false);
     refresh_running_config(&app, &state, &conn, &ws);
     crate::logs::log_workspace_event(&app, &ws, "info", "simulator", &format!("Updated register {}", register_label(&register)), None);
@@ -3126,6 +3153,9 @@ fn apply_profile(conn: &Connection, profile: &SimProfile) -> Result<(), String> 
     for reg in &profile.registers {
         validate_register(reg)?;
     }
+    // Reject a profile whose registers overlap each other (multi-word spans
+    // included) before we destroy the current setup — same guard add/update use.
+    validate_no_overlap(&[], &profile.registers)?;
     for r in db_list_registers(conn).map_err(|e| e.to_string())? {
         db_delete_register(conn, r.id).map_err(|e| e.to_string())?;
     }
@@ -3496,7 +3526,7 @@ mod tests {
         // A device with two registers + a standalone register + a rule.
         let dev_id = db_insert_device(&c, &SimDevice {
             id: 0, template_key: "temp_humidity".into(), name: "Sensor".into(),
-            unit_id: 1, base_address: 0, enabled: true, sort_order: 0,
+            unit_id: 1, base_address: 0, sort_order: 0,
         }).unwrap();
         let reg = |addr: i64, alias: &str| SimRegister {
             id: 0, unit_id: 1, function_code: 4, address: addr, alias: alias.into(),
@@ -4408,7 +4438,7 @@ mod tests {
         let c = mem_db();
         let id = db_insert_device(&c, &SimDevice {
             id: 0, template_key: "temp".into(), name: "Sensor A".into(),
-            unit_id: 1, base_address: 0, enabled: true, sort_order: 0,
+            unit_id: 1, base_address: 0, sort_order: 0,
         }).unwrap();
         // a child register
         db_insert_register(&c, &SimRegister {
@@ -4432,7 +4462,7 @@ mod tests {
         let c = mem_db();
         let device_id = db_insert_device(&c, &SimDevice {
             id: 0, template_key: "temp".into(), name: "Sensor A".into(),
-            unit_id: 1, base_address: 0, enabled: true, sort_order: 0,
+            unit_id: 1, base_address: 0, sort_order: 0,
         }).unwrap();
         db_insert_register(&c, &SimRegister {
             id: 0, unit_id: 1, function_code: 4, address: 0, alias: "t".into(),
@@ -4474,11 +4504,20 @@ mod tests {
     }
 
     #[test]
-    fn slave_bit_row_forces_bool_and_preserves_order_for_words() {
-        // Coil → bool/ABCD regardless of stored type/order.
+    fn slave_bit_row_maps_to_u16_and_preserves_order_for_words() {
+        // Coil/discrete → u16/ABCD (0/1) regardless of stored type/order:
+        // `bool` is reserved for Hold, so a route bit bank must use u16.
         let bit = slave_row_to_route_register(1, "tcp", 1, 5, "Run", "u16", "DCBA");
-        assert_eq!(bit.data_type, "bool");
+        assert_eq!(bit.data_type, "u16");
         assert_eq!(bit.byte_order, "ABCD");
+        assert_eq!(bit.value_source, "route");
+        // A bit-bank slave must still produce a template that passes validation,
+        // otherwise "expose this slave" fails for any slave with a coil/discrete.
+        let t = DeviceTemplate {
+            template_key: "ws-slave:9".into(), name: "Relay".into(), category: "Workspace".into(),
+            description: "".into(), icon: "🔗".into(), registers: vec![bit],
+        };
+        assert!(validate_template(&t).is_ok());
         // Multi-word holding preserves a real byte order.
         let word = slave_row_to_route_register(1, "tcp", 3, 100, "Power", "f32", "CDAB");
         assert_eq!(word.data_type, "f32");
@@ -4496,7 +4535,7 @@ mod tests {
         keys.dedup();
         assert_eq!(keys.len(), n, "template keys must be unique");
         // every register has a valid bank + non-empty type; the temp/humidity sensor exists
-        assert!(find_template("temp_humidity").is_some());
+        assert!(builtin_templates().into_iter().any(|t| t.template_key == "temp_humidity"));
         for t in &cat {
             assert!(!t.registers.is_empty(), "{} has no registers", t.template_key);
             for r in &t.registers {
@@ -4508,7 +4547,7 @@ mod tests {
 
     #[test]
     fn template_to_registers_offsets_and_addresses() {
-        let t = find_template("temp_humidity").unwrap();
+        let t = builtin_templates().into_iter().find(|t| t.template_key == "temp_humidity").unwrap();
         let regs = template_to_registers(&t, 3, 100);
         assert_eq!(regs.len(), 2);
         assert_eq!(regs[0].unit_id, 3);
@@ -4525,6 +4564,20 @@ mod tests {
         assert!(validate_no_overlap(&existing, &new).is_err());
         let free = vec![SimRegister { address:6, ..new[0].clone() }];
         assert!(validate_no_overlap(&existing, &free).is_ok());
+    }
+
+    #[test]
+    fn multi_word_register_past_max_address_is_rejected() {
+        let base = SimRegister { id:0, unit_id:1, function_code:3, address:65534, alias:"".into(), data_type:"u16".into(), hold_value:0, value_source:"generator".into(), byte_order:"ABCD".into(), source_params:"{}".into(), interval_ms:1000, sort_order:0, device_instance_id: None, unit: None, display_format: None };
+        // f64 at 65534 spans 65534..65537 → exceeds 65535, must be rejected.
+        let f64_over = SimRegister { data_type:"f64".into(), ..base.clone() };
+        assert!(validate_register(&f64_over).is_err());
+        // u16 at 65535 fits exactly (single word).
+        let u16_ok = SimRegister { address:65535, ..base.clone() };
+        assert!(validate_register(&u16_ok).is_ok());
+        // f32 at 65534 spans 65534..65535 → fits.
+        let f32_ok = SimRegister { data_type:"f32".into(), ..base };
+        assert!(validate_register(&f32_ok).is_ok());
     }
 
     #[test]
@@ -4557,7 +4610,7 @@ mod tests {
         let c = mem_db();
         let device_id = db_insert_device(&c, &SimDevice {
             id: 0, template_key: "temp".into(), name: "Sensor A".into(),
-            unit_id: 1, base_address: 100, enabled: true, sort_order: 0,
+            unit_id: 1, base_address: 100, sort_order: 0,
         }).unwrap();
         let reg_id = db_insert_register(&c, &SimRegister {
             id: 0, unit_id: 1, function_code: 4, address: 100, alias: "t".into(),

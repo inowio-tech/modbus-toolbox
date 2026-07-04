@@ -15,7 +15,7 @@ import { ToastProvider } from "../../components/ToastProvider";
 
 const renderPage = () => render(<ToastProvider><TcpSimulatorPage /></ToastProvider>);
 
-const device = { id: 1, templateKey: "temp-humidity", name: "Roof Sensor", unitId: 1, baseAddress: 100, enabled: true, sortOrder: 0 };
+const device = { id: 1, templateKey: "temp-humidity", name: "Roof Sensor", unitId: 1, baseAddress: 100, sortOrder: 0 };
 const reg = { id: 1, unitId: 1, functionCode: 3, address: 100, alias: "temp", dataType: "u16", holdValue: 0, sortOrder: 0, valueSource: "hold", byteOrder: "ABCD", sourceParams: "{}", intervalMs: 1000, deviceInstanceId: 1 };
 
 describe("TcpSimulatorPage (tabbed shell)", () => {

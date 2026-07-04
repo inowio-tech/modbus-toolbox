@@ -8,7 +8,6 @@ export type SimDevice = {
   name: string;
   unitId: number;
   baseAddress: number;
-  enabled: boolean;
   sortOrder: number;
 };
 

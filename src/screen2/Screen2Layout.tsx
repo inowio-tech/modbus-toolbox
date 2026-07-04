@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { NavLink, Outlet, useNavigate, useParams } from "react-router-dom";
+import { NavLink, Outlet, useLocation, useNavigate, useParams } from "react-router-dom";
 import { FiActivity, FiBookOpen, FiGrid, FiInfo, FiLink, FiList, FiMaximize2, FiMinimize2, FiMenu, FiServer, FiX, FiRefreshCcw } from "react-icons/fi";
 import { PiNetwork } from "react-icons/pi";
 import ThemeToggleButton from "../components/ThemeToggleButton";
@@ -13,7 +13,20 @@ import { clearTrafficEvents, setTrafficCaptureEnabled } from "./api/traffic";
 import { LuPanelLeftOpen, LuPanelRightOpen, LuSettings } from "react-icons/lu";
 import TrafficMonitorPanel from "./components/TrafficMonitorPanel";
 import { useHelp } from "../help/HelpProvider";
+import type { HelpSectionSlug } from "../help/types";
 import SimulatorStatusChip from "./components/SimulatorStatusChip";
+
+/** Map the current in-workspace route to the help section that documents it,
+ * so the Help button lands the user on the page they're actually looking at. */
+function helpSectionForPath(pathname: string): HelpSectionSlug {
+  if (pathname.includes("/tcp-simulator")) return "simulator";
+  if (pathname.includes("/connection")) return "connection";
+  if (pathname.includes("/slaves")) return "slaves";
+  if (pathname.includes("/analyzer")) return "analyzer";
+  if (pathname.includes("/logs")) return "logs";
+  if (pathname.includes("/workspace")) return "workspace";
+  return "overview";
+}
 
 export type Workspace = {
   name: string;
@@ -47,6 +60,7 @@ export default function Screen2Layout() {
   const params = useParams();
   const workspaceName = params.workspaceName ?? "";
   const { openHelp } = useHelp();
+  const location = useLocation();
 
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [loading, setLoading] = useState(false);
@@ -612,7 +626,7 @@ export default function Screen2Layout() {
             <button
               type="button"
               className="hidden items-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:border-emerald-500/60 hover:text-emerald-700 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:text-emerald-100 sm:inline-flex"
-              onClick={() => openHelp({ section: "overview" })}
+              onClick={() => openHelp({ section: helpSectionForPath(location.pathname) })}
               title="Open help"
             >
               <FiBookOpen className="h-3 w-3" aria-hidden="true" />
@@ -831,7 +845,7 @@ export default function Screen2Layout() {
               className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 lg:hidden dark:border-slate-800 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-700"
               onClick={() => {
                 setMenuOpen(false);
-                openHelp();
+                openHelp({ section: helpSectionForPath(location.pathname) });
               }}
               title="Open help"
             >

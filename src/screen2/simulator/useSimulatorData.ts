@@ -18,10 +18,17 @@ export type SimStatus = {
   clients?: ClientInfo[];
 };
 export type SnapshotRow = { unitId: number; functionCode: number; address: number; valueWord: number | null; valueBit: boolean | null; sourceStatus?: string | null };
-export type SimDevice = { id: number; templateKey: string; name: string; unitId: number; baseAddress: number; enabled: boolean; sortOrder: number };
+export type SimDevice = { id: number; templateKey: string; name: string; unitId: number; baseAddress: number; sortOrder: number };
 export type PageRegister = SimRegister & { deviceInstanceId?: number | null };
 
 export type AddDevicePayload = { templateKey: string; deviceName: string; unitId: number; baseAddress: number };
+
+/** Number of consecutive addresses a register occupies, by data type width. */
+export function wordSpan(dataType: string): number {
+  if (dataType === "u64" || dataType === "i64" || dataType === "f64") return 4;
+  if (dataType === "u32" || dataType === "i32" || dataType === "f32") return 2;
+  return 1;
+}
 
 /**
  * Extraction of the TCP Simulator page's data/mutation logic (state, reload,
@@ -164,12 +171,29 @@ export function useSimulatorData(ws: string) {
   // copy is created standalone (deviceInstanceId cleared) since the backend
   // insert doesn't attach it to a device anyway.
   const duplicateRegister = useCallback(async (reg: PageRegister) => {
-    const span = reg.dataType === "u32" || reg.dataType === "i32" || reg.dataType === "f32" ? 2 : 1;
-    const taken = new Set(
-      registers.filter((r) => r.unitId === reg.unitId && r.functionCode === reg.functionCode).map((r) => r.address),
-    );
+    const span = wordSpan(reg.dataType);
+    // Occupancy of the same unit+bank, expanded across each register's FULL word
+    // span (not just its start) so a multi-word clone can't land inside another
+    // register's tail — which the backend's span-aware overlap check would reject.
+    const occupied = new Set<number>();
+    for (const r of registers) {
+      if (r.unitId !== reg.unitId || r.functionCode !== reg.functionCode) continue;
+      const rs = wordSpan(r.dataType);
+      for (let a = r.address; a < r.address + rs; a++) occupied.add(a);
+    }
+    // First start address past the original's own span where the clone's whole
+    // span is free and stays within the Modbus map (0-65535).
+    const spanFree = (start: number): boolean => {
+      if (start + span - 1 > 65535) return false;
+      for (let a = start; a < start + span; a++) if (occupied.has(a)) return false;
+      return true;
+    };
     let addr = reg.address + span;
-    while (addr <= 65535 && taken.has(addr)) addr += 1;
+    while (addr + span - 1 <= 65535 && !spanFree(addr)) addr += 1;
+    if (addr + span - 1 > 65535) {
+      setError("No free address range available to duplicate this register.");
+      return;
+    }
     const clone: PageRegister = { ...reg, id: 0, alias: `${reg.alias} (copy)`, address: addr, deviceInstanceId: null };
     try { await invoke("simulator_add_register", { name: ws, register: clone }); await reload(); }
     catch (e) { setError(String(e)); }

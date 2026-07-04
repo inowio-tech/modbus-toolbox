@@ -57,6 +57,29 @@ All notable changes to this project are tracked here following [Keep a Changelog
   export/import. Sidebar collapse state now persists across restarts.
 
 ### Fixed
+- **Expose a real slave as a device** now works for slaves that have coil or
+  discrete-input registers. Those bit-bank registers are mapped to the correct
+  `u16` (0/1) route type instead of `bool`, which the register validator
+  rejected — previously the whole "add slave as device" action failed for any
+  slave with a coil/discrete register.
+- Editing a running simulator register to a **narrower** data type (e.g. `f64`
+  → `u16`) no longer leaves stale "ghost" words being served at the vacated
+  addresses; the previous span is cleared before the new value is seeded.
+- **Duplicating** a register now searches for a free slot span-aware: it accounts
+  for every existing register's full word span (not just its start) and places
+  the copy's whole span in a free, in-range gap, so duplicating a multi-word
+  register no longer lands inside another register's tail (and reports clearly if
+  the map is full).
+- Manually adding or editing a **multi-word** register (and importing a Profile)
+  now rejects configurations whose word span would overlap another register,
+  closing a silent live-bank corruption path that the address-only uniqueness
+  check missed.
+- A **multi-word** register can no longer be placed so its span runs past address
+  65535 — an `f64` near the top of the map used to wrap its tail words back to
+  address 0. Such registers are now rejected on add, edit, and Profile import.
+- The **Help** button now opens the section for the page you're on — TCP
+  Simulator, Virtual Devices, Slaves, Analyzer, etc. — instead of always the
+  overview.
 - Deleting a simulator **rule** now asks for confirmation (parity with register
   and device deletes).
 - Custom dropdown menus (the Registers **Columns** chooser and the Analyzer tile
