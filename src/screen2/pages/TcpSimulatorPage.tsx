@@ -67,6 +67,7 @@ export default function TcpSimulatorPage() {
   const [modalRule, setModalRule] = useState<SimRule | null>(null);
   const [deviceEdit, setDeviceEdit] = useState<{ kind: "rename" | "rebase"; device: SimDevice } | null>(null);
   const [confirmDeleteDevice, setConfirmDeleteDevice] = useState<SimDevice | null>(null);
+  const [confirmDeleteRule, setConfirmDeleteRule] = useState<SimRule | null>(null);
   const [confirmDeleteRegister, setConfirmDeleteRegister] = useState<PageRegister | null>(null);
   // Pre-filled draft for "Save as virtual device" (null = closed). Opens the full
   // template editor so the layout is visible and the key is clash-guarded.
@@ -216,7 +217,7 @@ export default function TcpSimulatorPage() {
               onAdd={() => { setModalRule(null); setRuleModalOpen(true); }}
               onEdit={(rule) => { setModalRule(rule); setRuleModalOpen(true); }}
               onToggle={(rule, enabled) => void sim.updateRule({ ...rule, enabled })}
-              onDelete={(id) => void sim.deleteRule(id)}
+              onDelete={(id) => setConfirmDeleteRule(sim.rules.find((r) => r.id === id) ?? null)}
             />
           ) : null}
 
@@ -319,6 +320,32 @@ export default function TcpSimulatorPage() {
           setConfirmDeleteDevice(null);
         }}
         onClose={() => setConfirmDeleteDevice(null)}
+      />
+
+      <ConfirmDialog
+        open={confirmDeleteRule !== null}
+        tone="danger"
+        title="Delete rule"
+        description={
+          confirmDeleteRule ? (
+            <>
+              <p className="mb-2">
+                Delete rule{" "}
+                <span className="font-semibold text-emerald-700 dark:text-emerald-300">
+                  {confirmDeleteRule.name?.trim() ? confirmDeleteRule.name.trim() : `#${confirmDeleteRule.id}`}
+                </span>?
+              </p>
+              <p className="text-[11px] text-slate-600 dark:text-slate-400">This action cannot be undone.</p>
+            </>
+          ) : null
+        }
+        confirmIcon={<FiTrash2 className="h-4 w-4" aria-hidden="true" />}
+        confirmText="Delete rule"
+        onConfirm={() => {
+          if (confirmDeleteRule) void sim.deleteRule(confirmDeleteRule.id);
+          setConfirmDeleteRule(null);
+        }}
+        onClose={() => setConfirmDeleteRule(null)}
       />
 
       <ConfirmDialog

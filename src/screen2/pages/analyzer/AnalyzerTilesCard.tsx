@@ -117,9 +117,17 @@ export default function AnalyzerTilesCard(props: Props) {
       setTileMenuOpenId(null);
     };
 
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setMenuOpen(false);
+      setTileMenuOpenId(null);
+    };
+
     document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("keydown", onKeyDown);
     return () => {
       document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("keydown", onKeyDown);
     };
   }, [menuOpen, tileMenuOpenId]);
 

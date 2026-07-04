@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { FiTrash2, FiX } from "react-icons/fi";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { FiChevronLeft, FiChevronRight, FiTrash2, FiX } from "react-icons/fi";
 
 import type { SimDevice, SimStatus, SnapshotRow } from "./useSimulatorData";
 import {
@@ -79,7 +79,23 @@ export default function RegistersTab(props: RegistersTabProps) {
   const [filter, setFilter] = useState<RegisterFilter>(EMPTY_FILTER);
   const [columns, setColumns] = useState<ColumnKey[]>(() => readColumns(ws));
   const [columnsMenuOpen, setColumnsMenuOpen] = useState(false);
+  const columnsMenuRef = useRef<HTMLDivElement>(null);
   const [page, setPage] = useState(0);
+
+  // Close the Columns popover on Escape or a click/tap outside it.
+  useEffect(() => {
+    if (!columnsMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (columnsMenuRef.current && !columnsMenuRef.current.contains(e.target as Node)) setColumnsMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setColumnsMenuOpen(false); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [columnsMenuOpen]);
   const [pageSize, setPageSize] = useState<number>(() => readPageSize(ws));
 
   const unitOptions = useMemo(
@@ -259,7 +275,7 @@ export default function RegistersTab(props: RegistersTabProps) {
           </select>
         </label>
 
-        <div className="relative">
+        <div className="relative" ref={columnsMenuRef}>
           <button
             type="button"
             aria-label="Show or hide columns"
@@ -386,11 +402,12 @@ export default function RegistersTab(props: RegistersTabProps) {
               <button
                 type="button"
                 aria-label="Previous page"
+                title="Previous page"
                 disabled={clampedPage === 0}
-                className="rounded-lg border border-slate-300 px-2 py-1 disabled:opacity-40 dark:border-slate-700"
+                className="inline-flex items-center justify-center rounded-full border border-slate-300 p-1.5 transition hover:bg-slate-100 disabled:opacity-40 disabled:hover:bg-transparent dark:border-slate-700 dark:hover:bg-slate-800"
                 onClick={() => setPage((p) => Math.max(0, p - 1))}
               >
-                Prev
+                <FiChevronLeft className="h-4 w-4" aria-hidden="true" />
               </button>
               <span>
                 Page {clampedPage + 1} of {pageCount}
@@ -398,11 +415,12 @@ export default function RegistersTab(props: RegistersTabProps) {
               <button
                 type="button"
                 aria-label="Next page"
+                title="Next page"
                 disabled={clampedPage >= pageCount - 1}
-                className="rounded-lg border border-slate-300 px-2 py-1 disabled:opacity-40 dark:border-slate-700"
+                className="inline-flex items-center justify-center rounded-full border border-slate-300 p-1.5 transition hover:bg-slate-100 disabled:opacity-40 disabled:hover:bg-transparent dark:border-slate-700 dark:hover:bg-slate-800"
                 onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
               >
-                Next
+                <FiChevronRight className="h-4 w-4" aria-hidden="true" />
               </button>
               <label className="flex items-center gap-1">
                 <span className="sr-only">Rows per page</span>

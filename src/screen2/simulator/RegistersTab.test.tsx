@@ -92,4 +92,21 @@ describe("RegistersTab", () => {
     fireEvent.click(screen.getByRole("button", { name: /hex addresses/i }));
     expect(p.onAddrFmt).toHaveBeenCalledWith("hex");
   });
+
+  it("closes the Columns menu on Escape and on an outside click", () => {
+    render(<RegistersTab {...base()} />);
+    const toggle = screen.getByRole("button", { name: /show or hide columns/i });
+
+    // Opens, then Escape closes it.
+    fireEvent.click(toggle);
+    expect(screen.getByLabelText(/toggle unit column/i)).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByLabelText(/toggle unit column/i)).not.toBeInTheDocument();
+
+    // Opens again, then a click outside closes it.
+    fireEvent.click(toggle);
+    expect(screen.getByLabelText(/toggle unit column/i)).toBeInTheDocument();
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByLabelText(/toggle unit column/i)).not.toBeInTheDocument();
+  });
 });
