@@ -1605,13 +1605,23 @@ pub fn simulator_save_custom_template(app: tauri::AppHandle, template: DeviceTem
     if builtin_templates().iter().any(|b| b.template_key == template.template_key) {
         return Err(format!("'{}' is a built-in template key; choose a different key", template.template_key));
     }
+    let (name, key) = (template.name.clone(), template.template_key.clone());
     let mut custom = read_custom_templates(&app);
+    let existed = custom.iter().any(|t| t.template_key == key);
     if let Some(existing) = custom.iter_mut().find(|t| t.template_key == template.template_key) {
         *existing = template;
     } else {
         custom.push(template);
     }
-    write_custom_templates(&app, &custom)
+    write_custom_templates(&app, &custom)?;
+    crate::logs::log_app_event(
+        &app,
+        "info",
+        "virtual-devices",
+        &format!("{} virtual device '{name}' ({key})", if existed { "Updated" } else { "Saved" }),
+        None,
+    );
+    Ok(())
 }
 
 /// Delete a custom template from the catalog by key.
@@ -1621,9 +1631,18 @@ pub fn simulator_delete_custom_template(app: tauri::AppHandle, template_key: Str
     let before = custom.len();
     custom.retain(|t| t.template_key != template_key);
     if custom.len() == before {
+        crate::logs::log_app_event(
+            &app,
+            "warn",
+            "virtual-devices",
+            &format!("Delete failed: no custom virtual device '{template_key}'"),
+            None,
+        );
         return Err(format!("no custom template '{template_key}'"));
     }
-    write_custom_templates(&app, &custom)
+    write_custom_templates(&app, &custom)?;
+    crate::logs::log_app_event(&app, "info", "virtual-devices", &format!("Deleted virtual device '{template_key}'"), None);
+    Ok(())
 }
 
 /// Import a shared template `.json` file into the catalog (community sharing)
@@ -1654,6 +1673,13 @@ pub async fn simulator_import_custom_template(app: tauri::AppHandle) -> Result<O
         custom.push(template.clone());
     }
     write_custom_templates(&app, &custom)?;
+    crate::logs::log_app_event(
+        &app,
+        "info",
+        "virtual-devices",
+        &format!("Imported virtual device '{}' ({})", template.name, template.template_key),
+        None,
+    );
     Ok(Some(template))
 }
 
@@ -1679,6 +1705,7 @@ pub async fn simulator_export_template(app: tauri::AppHandle, template_key: Stri
     };
     let path = file.into_path().map_err(|e| e.to_string())?;
     std::fs::write(&path, json).map_err(|e| format!("failed to write file: {e}"))?;
+    crate::logs::log_app_event(&app, "info", "virtual-devices", &format!("Exported virtual device '{template_key}'"), None);
     Ok(true)
 }
 
@@ -1883,6 +1910,8 @@ fn instantiate_device(
 
     let tx = conn.transaction().map_err(|e| e.to_string())?;
 
+    let dev_label = device_name.clone();
+    let reg_count = regs.len();
     let device_id = db_insert_device(
         &tx,
         &SimDevice {
@@ -1915,6 +1944,15 @@ fn instantiate_device(
         apply_to_running(state, ws, reg, false);
     }
     refresh_running_config(app, state, &conn, ws);
+
+    crate::logs::log_workspace_event(
+        app,
+        ws,
+        "info",
+        "simulator",
+        &format!("Added device '{dev_label}' at unit {unit_id}, base {base_address} ({reg_count} register(s))"),
+        None,
+    );
 
     Ok(device_id)
 }
@@ -2052,6 +2090,14 @@ pub fn simulator_delete_device(
         apply_to_running(&state, &ws, reg, true);
     }
     refresh_running_config(&app, &state, &conn, &ws);
+    crate::logs::log_workspace_event(
+        &app,
+        &ws,
+        "info",
+        "simulator",
+        &format!("Deleted device #{id} and its {} register(s)", children.len()),
+        None,
+    );
     Ok(())
 }
 
@@ -2059,7 +2105,10 @@ pub fn simulator_delete_device(
 pub fn simulator_update_device(app: tauri::AppHandle, name: String, device: SimDevice) -> Result<(), String> {
     let ws = validate_workspace_name(&name)?;
     let conn = open_workspace_db(&app, &ws)?;
-    db_update_device(&conn, &device).map_err(|e| e.to_string())
+    let label = device.name.clone();
+    db_update_device(&conn, &device).map_err(|e| e.to_string())?;
+    crate::logs::log_workspace_event(&app, &ws, "info", "simulator", &format!("Updated device '{label}'"), None);
+    Ok(())
 }
 
 #[tauri::command]
@@ -2105,6 +2154,14 @@ pub fn simulator_rebase_device(
         apply_to_running(&state, &ws, reg, false);
     }
     refresh_running_config(&app, &state, &conn, &ws);
+    crate::logs::log_workspace_event(
+        &app,
+        &ws,
+        "info",
+        "simulator",
+        &format!("Re-based device '{}' (#{id}) to base {new_base_address}", device.name),
+        None,
+    );
     Ok(())
 }
 
@@ -2656,7 +2713,17 @@ pub fn simulator_set_config(app: tauri::AppHandle, name: String, config: SimConf
     let ws = validate_workspace_name(&name)?;
     validate_config(&config)?;
     let conn = open_workspace_db(&app, &ws)?;
-    db_set_config(&conn, &config).map_err(|e| e.to_string())
+    db_set_config(&conn, &config).map_err(|e| e.to_string())?;
+    // Debug, not info: saveConfig fires on every field edit, so info would be noisy.
+    crate::logs::log_workspace_event(
+        &app,
+        &ws,
+        "debug",
+        "simulator",
+        &format!("Simulator config saved (host {}, port {}, tick {}ms)", config.host, config.port, config.tick_ms),
+        None,
+    );
+    Ok(())
 }
 
 #[tauri::command]
@@ -2679,6 +2746,7 @@ pub fn simulator_add_register(
     let id = db_insert_register(&conn, &register).map_err(|e| e.to_string())?;
     apply_to_running(&state, &ws, &register, false);
     refresh_running_config(&app, &state, &conn, &ws);
+    crate::logs::log_workspace_event(&app, &ws, "info", "simulator", &format!("Added register {}", register_label(&register)), None);
     Ok(id)
 }
 
@@ -2695,6 +2763,7 @@ pub fn simulator_update_register(
     db_update_register(&conn, &register).map_err(|e| e.to_string())?;
     apply_to_running(&state, &ws, &register, false);
     refresh_running_config(&app, &state, &conn, &ws);
+    crate::logs::log_workspace_event(&app, &ws, "info", "simulator", &format!("Updated register {}", register_label(&register)), None);
     Ok(())
 }
 
@@ -2711,8 +2780,8 @@ pub fn simulator_delete_register(
     let existing = db_list_registers(&conn).map_err(|e| e.to_string())?
         .into_iter().find(|r| r.id == id);
     db_delete_register(&conn, id).map_err(|e| e.to_string())?;
-    if let Some(reg) = existing {
-        apply_to_running(&state, &ws, &reg, true);
+    if let Some(reg) = &existing {
+        apply_to_running(&state, &ws, reg, true);
         // A device is just a grouping of its registers — once the last one is
         // deleted, remove the now-empty device instead of leaving a phantom.
         if let Some(device_id) = reg.device_instance_id {
@@ -2723,7 +2792,16 @@ pub fn simulator_delete_register(
         }
     }
     refresh_running_config(&app, &state, &conn, &ws);
+    let label = existing.as_ref().map(register_label).unwrap_or_else(|| format!("#{id}"));
+    crate::logs::log_workspace_event(&app, &ws, "info", "simulator", &format!("Deleted register {label}"), None);
     Ok(())
+}
+
+/// Short human label for a register in logs: `alias @ unit U bank B addr A`.
+fn register_label(r: &SimRegister) -> String {
+    let bank = match r.function_code { 1 => "coil", 2 => "discrete", 3 => "holding", 4 => "input", _ => "?" };
+    let alias = if r.alias.trim().is_empty() { String::new() } else { format!("'{}' ", r.alias.trim()) };
+    format!("{alias}@ unit {} {bank} {}", r.unit_id, r.address)
 }
 
 #[tauri::command]
@@ -2741,8 +2819,10 @@ pub fn simulator_add_rule(
 ) -> Result<i64, String> {
     let ws = validate_workspace_name(&name)?;
     let conn = open_workspace_db(&app, &ws)?;
+    let label = rule.name.clone();
     let id = db_insert_rule(&conn, &rule).map_err(|e| e.to_string())?;
     refresh_running_config(&app, &state, &conn, &ws);
+    crate::logs::log_workspace_event(&app, &ws, "info", "simulator", &format!("Added rule '{label}'"), None);
     Ok(id)
 }
 #[tauri::command]
@@ -2754,8 +2834,10 @@ pub fn simulator_update_rule(
 ) -> Result<(), String> {
     let ws = validate_workspace_name(&name)?;
     let conn = open_workspace_db(&app, &ws)?;
+    let label = rule.name.clone();
     db_update_rule(&conn, &rule).map_err(|e| e.to_string())?;
     refresh_running_config(&app, &state, &conn, &ws);
+    crate::logs::log_workspace_event(&app, &ws, "info", "simulator", &format!("Updated rule '{label}'"), None);
     Ok(())
 }
 #[tauri::command]
@@ -2769,6 +2851,7 @@ pub fn simulator_delete_rule(
     let conn = open_workspace_db(&app, &ws)?;
     db_delete_rule(&conn, id).map_err(|e| e.to_string())?;
     refresh_running_config(&app, &state, &conn, &ws);
+    crate::logs::log_workspace_event(&app, &ws, "info", "simulator", &format!("Deleted rule #{id}"), None);
     Ok(())
 }
 
@@ -2888,18 +2971,15 @@ pub async fn simulator_start(
             if let Err(e) = crate::modbus::ensure_route_session(
                 &modbus, &app, &ws, connection_kind, *slave_unit as i64,
             ).await {
-                let _ = crate::logs::log_event(
-                    app.clone(),
-                    crate::logs::LogEventInput {
-                        scope: "workspace".into(),
-                        level: "warn".into(),
-                        workspace_name: Some(ws.clone()),
-                        source: "simulator".into(),
-                        message: format!(
-                            "Route source connection failed ({connection_kind}); routed registers will show MISSING until it is reachable: {e}"
-                        ),
-                        details_json: None,
-                    },
+                crate::logs::log_workspace_event(
+                    &app,
+                    &ws,
+                    "warn",
+                    "simulator",
+                    &format!(
+                        "Route source connection failed ({connection_kind}); routed registers will show MISSING until it is reachable: {e}"
+                    ),
+                    None,
                 );
             }
         }
@@ -2932,6 +3012,24 @@ pub async fn simulator_start(
         },
         Err(_) => SimStatus { running: false, listen: None, client_count: 0, started_at_ms: None, clients: Vec::new() },
     };
+    match &result {
+        Ok(info) => crate::logs::log_workspace_event(
+            &app,
+            &ws,
+            "info",
+            "simulator",
+            &format!("Simulator started, listening on {}", info.bound),
+            None,
+        ),
+        Err(e) => crate::logs::log_workspace_event(
+            &app,
+            &ws,
+            "error",
+            "simulator",
+            &format!("Simulator failed to start on {}:{}: {e}", cfg.host, cfg.port),
+            None,
+        ),
+    }
     {
         let mut map = state.0.lock().unwrap();
         map.insert(ws, engine);
@@ -2941,6 +3039,7 @@ pub async fn simulator_start(
 
 #[tauri::command]
 pub async fn simulator_stop(
+    app: tauri::AppHandle,
     state: tauri::State<'_, SimulatorState>,
     name: String,
 ) -> Result<(), String> {
@@ -2949,11 +3048,15 @@ pub async fn simulator_stop(
         let mut map = state.0.lock().unwrap();
         map.remove(&ws)
     };
+    let was_running = engine.as_ref().map(|e| e.is_running()).unwrap_or(false);
     if let Some(engine) = engine.as_mut() {
         engine.stop().await;
     }
     if let Some(engine) = engine {
-        state.0.lock().unwrap().insert(ws, engine);
+        state.0.lock().unwrap().insert(ws.clone(), engine);
+    }
+    if was_running {
+        crate::logs::log_workspace_event(&app, &ws, "info", "simulator", "Simulator stopped", None);
     }
     Ok(())
 }
@@ -3086,6 +3189,7 @@ pub async fn simulator_export_profile(app: tauri::AppHandle, name: String) -> Re
     };
     let path = file.into_path().map_err(|e| e.to_string())?;
     std::fs::write(&path, json).map_err(|e| format!("failed to write file: {e}"))?;
+    crate::logs::log_workspace_event(&app, &ws, "info", "simulator", "Exported simulator profile", None);
     Ok(true)
 }
 
@@ -3102,6 +3206,10 @@ pub async fn simulator_import_profile(
     {
         let map = state.0.lock().unwrap();
         if map.get(&ws).map(|e| e.is_running()).unwrap_or(false) {
+            crate::logs::log_workspace_event(
+                &app, &ws, "warn", "simulator",
+                "Profile import rejected: stop the simulator first", None,
+            );
             return Err("Stop the simulator before importing a profile.".into());
         }
     }
@@ -3119,6 +3227,17 @@ pub async fn simulator_import_profile(
         serde_json::from_str(&json).map_err(|e| format!("invalid profile JSON: {e}"))?;
     let conn = open_workspace_db(&app, &ws)?;
     apply_profile(&conn, &profile)?;
+    crate::logs::log_workspace_event(
+        &app,
+        &ws,
+        "info",
+        "simulator",
+        &format!(
+            "Imported simulator profile ({} device(s), {} register(s), {} rule(s))",
+            profile.devices.len(), profile.registers.len(), profile.rules.len()
+        ),
+        None,
+    );
     Ok(true)
 }
 

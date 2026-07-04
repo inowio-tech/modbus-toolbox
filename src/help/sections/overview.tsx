@@ -72,6 +72,14 @@ const overviewSection: HelpSectionDefinition = {
           <li>Visual interface for device interaction without writing test harnesses.</li>
           <li>Central register catalog reused across connections, slaves, and analyzer tiles.</li>
           <li>Real-time polling with decoded + raw values to validate scaling and byte order.</li>
+          <li>
+            A built-in <HelpAnchorLink section="simulator" anchor="overview" variant="link">TCP Simulator</HelpAnchorLink> (server mode) that answers external
+            masters from fixed, generated, or slave-routed values—no hardware needed.
+          </li>
+          <li>
+            Reusable, shareable <HelpAnchorLink section="virtual-devices" anchor="overview" variant="link">Virtual Devices</HelpAnchorLink>—build a device
+            once and drop it into any workspace's simulator, or export it as a JSON file.
+          </li>
           <li>Structured logging for exportable diagnostics when something misbehaves.</li>
         </ul>
         <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-800/60 dark:bg-slate-900/30">

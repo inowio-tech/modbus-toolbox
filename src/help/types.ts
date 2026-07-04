@@ -8,7 +8,8 @@ export type HelpSectionSlug =
   | "analyzer"
   | "logs"
   | "settings"
-  | "simulator";
+  | "simulator"
+  | "virtual-devices";
 
 export const DEFAULT_HELP_SECTION: HelpSectionSlug = "overview";
 
@@ -44,7 +45,8 @@ export function isHelpSectionSlug(value: string | null | undefined): value is He
     value === "analyzer" ||
     value === "logs" ||
     value === "settings" ||
-    value === "simulator"
+    value === "simulator" ||
+    value === "virtual-devices"
   );
 }
 
