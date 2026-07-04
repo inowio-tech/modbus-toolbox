@@ -256,6 +256,8 @@ pub fn run() {
             simulator::simulator_export_template,
             simulator::simulator_device_to_template,
             simulator::simulator_add_device,
+            simulator::simulator_add_inline_device,
+            simulator::simulator_list_slave_device_templates,
             simulator::simulator_list_devices,
             simulator::simulator_delete_device,
             simulator::simulator_update_device,

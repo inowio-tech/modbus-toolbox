@@ -406,6 +406,25 @@ async fn ensure_tcp_session(
     Ok(())
 }
 
+/// Ensure a client session exists for `workspace` on `connection_kind`, so the
+/// TCP simulator's route reads have a live source to read through. Reuses the
+/// shared session the slave/client pages open (a serial port is never opened
+/// twice); establishes it from the workspace connection settings when absent.
+/// `unit_id` only seeds the initial attach — `route_read_words` overrides the
+/// slave per read, so any route unit works off the one per-workspace session.
+pub async fn ensure_route_session(
+    state: &tauri::State<'_, ModbusState>,
+    app: &tauri::AppHandle,
+    workspace: &str,
+    connection_kind: &str,
+    unit_id: i64,
+) -> Result<(), String> {
+    match connection_kind {
+        "serial" | "rtu" => ensure_rtu_session(state, app, workspace, unit_id).await,
+        _ => ensure_tcp_session(state, app, workspace, unit_id).await,
+    }
+}
+
 async fn probe_rtu_session(
     app: tauri::AppHandle,
     state: tauri::State<'_, ModbusState>,

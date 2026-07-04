@@ -1818,19 +1818,55 @@ pub fn simulator_add_device(
     base_address: i64,
 ) -> Result<i64, String> {
     let ws = validate_workspace_name(&name)?;
-    if !(0..=255).contains(&unit_id) {
-        return Err(format!("unit id {} out of range (0-255)", unit_id));
-    }
-    if !(0..=65535).contains(&base_address) {
-        return Err(format!("base address {} out of range (0-65535)", base_address));
-    }
     // Include custom (app-global) templates, not just built-ins, so an imported
     // community device can be instantiated.
     let t = simulator_list_device_templates(app.clone())?
         .into_iter()
         .find(|t| t.template_key == template_key)
         .ok_or("unknown template")?;
-    let regs = template_to_registers(&t, unit_id, base_address);
+    instantiate_device(&app, &state, &ws, &t, template_key, device_name, unit_id, base_address)
+}
+
+/// Instantiate a device from a template supplied inline rather than looked up in
+/// the catalog. Used for "workspace-slave" devices (see
+/// `simulator_list_slave_device_templates`), whose route-register maps are built
+/// on the fly from a real slave and aren't part of the shared template catalog.
+#[tauri::command]
+pub fn simulator_add_inline_device(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SimulatorState>,
+    name: String,
+    template: DeviceTemplate,
+    device_name: String,
+    unit_id: i64,
+    base_address: i64,
+) -> Result<i64, String> {
+    let ws = validate_workspace_name(&name)?;
+    validate_template(&template)?;
+    let key = template.template_key.clone();
+    instantiate_device(&app, &state, &ws, &template, key, device_name, unit_id, base_address)
+}
+
+/// Shared body for catalog and inline device creation: expand the template at
+/// `unit_id`/`base_address`, reject out-of-range / overlapping registers, insert
+/// the device + its child registers, and push them into the live banks.
+fn instantiate_device(
+    app: &tauri::AppHandle,
+    state: &tauri::State<'_, SimulatorState>,
+    ws: &str,
+    template: &DeviceTemplate,
+    stored_key: String,
+    device_name: String,
+    unit_id: i64,
+    base_address: i64,
+) -> Result<i64, String> {
+    if !(0..=255).contains(&unit_id) {
+        return Err(format!("unit id {} out of range (0-255)", unit_id));
+    }
+    if !(0..=65535).contains(&base_address) {
+        return Err(format!("base address {} out of range (0-65535)", base_address));
+    }
+    let regs = template_to_registers(template, unit_id, base_address);
 
     for reg in &regs {
         if reg.address + word_count(&reg.data_type) as i64 - 1 > 65535 {
@@ -1841,7 +1877,7 @@ pub fn simulator_add_device(
         }
     }
 
-    let mut conn = open_workspace_db(&app, &ws)?;
+    let mut conn = open_workspace_db(app, ws)?;
     let existing = db_list_registers(&conn).map_err(|e| e.to_string())?;
     validate_no_overlap(&existing, &regs)?;
 
@@ -1851,7 +1887,7 @@ pub fn simulator_add_device(
         &tx,
         &SimDevice {
             id: 0,
-            template_key,
+            template_key: stored_key,
             name: device_name,
             unit_id,
             base_address,
@@ -1876,11 +1912,119 @@ pub fn simulator_add_device(
     // server is running is served immediately (parity with add/update register).
     // No-op when the server is stopped — the next Start rebuilds banks from the DB.
     for reg in &regs {
-        apply_to_running(&state, &ws, reg, false);
+        apply_to_running(state, ws, reg, false);
     }
-    refresh_running_config(&app, &state, &conn, &ws);
+    refresh_running_config(app, state, &conn, ws);
 
     Ok(device_id)
+}
+
+/// Map one slave register row to a route `TemplateRegister` that mirrors it:
+/// same bank/address/type, exposed at the same offset, reading through the
+/// slave's own connection + unit. Bit banks (coil/discrete) are forced to
+/// `bool`/`ABCD` so `validate_register` accepts them.
+fn slave_row_to_route_register(
+    unit_id: i64,
+    conn_kind: &str,
+    fc: i64,
+    addr: i64,
+    alias: &str,
+    data_type: &str,
+    order: &str,
+) -> TemplateRegister {
+    let is_bit = fc == 1 || fc == 2;
+    let source_params = serde_json::json!({
+        "slaveUnitId": unit_id,
+        "connectionKind": conn_kind,
+        "functionCode": fc,
+        "address": addr,
+        "scale": 1.0,
+        "offset": 0.0,
+    })
+    .to_string();
+    TemplateRegister {
+        offset: addr.clamp(0, 65535) as u16,
+        bank: fc as u8,
+        data_type: if is_bit { "bool".into() } else { data_type.to_string() },
+        byte_order: if is_bit || order.is_empty() { "ABCD".into() } else { order.to_string() },
+        value_source: "route".into(),
+        source_params,
+        alias: alias.to_string(),
+    }
+}
+
+/// Build synthetic "Workspace" device templates from the workspace's own slaves:
+/// each slave becomes a device whose registers ROUTE to that slave (using the
+/// slave's connection + unit), so a real device configured on the Slaves page can
+/// be exposed over the TCP simulator in one step. Not part of the shared catalog
+/// — instantiated inline via `simulator_add_inline_device`.
+#[tauri::command]
+pub fn simulator_list_slave_device_templates(
+    app: tauri::AppHandle,
+    name: String,
+) -> Result<Vec<DeviceTemplate>, String> {
+    let ws = validate_workspace_name(&name)?;
+    let conn = open_workspace_db(&app, &ws)?;
+
+    let mut slave_stmt = conn
+        .prepare("SELECT id, name, unit_id, connection_kind FROM slaves ORDER BY unit_id ASC;")
+        .map_err(|e| e.to_string())?;
+    let slaves: Vec<(i64, String, i64, String)> = slave_stmt
+        .query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string())?;
+
+    let mut out: Vec<DeviceTemplate> = Vec::new();
+    for (slave_id, slave_name, unit_id, conn_kind_raw) in slaves {
+        let conn_kind = if conn_kind_raw.is_empty() { "tcp".to_string() } else { conn_kind_raw };
+        let mut row_stmt = conn
+            .prepare(
+                "SELECT function_code, address, alias, data_type, \"order\"
+                 FROM slave_register_rows
+                 WHERE slave_id = ?1 AND function_code IN (1,2,3,4)
+                 ORDER BY function_code ASC, address ASC;",
+            )
+            .map_err(|e| e.to_string())?;
+        let registers: Vec<TemplateRegister> = row_stmt
+            .query_map([slave_id], |r| {
+                let fc: i64 = r.get(0)?;
+                let addr: i64 = r.get(1)?;
+                let alias: String = r.get::<_, Option<String>>(2)?.unwrap_or_default();
+                let data_type: String = r.get::<_, Option<String>>(3)?.unwrap_or_else(|| "u16".into());
+                let order: String = r.get::<_, Option<String>>(4)?.unwrap_or_default();
+                Ok(slave_row_to_route_register(unit_id, &conn_kind, fc, addr, &alias, &data_type, &order))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())?;
+
+        if registers.is_empty() {
+            continue; // nothing readable to route — skip
+        }
+
+        let count = registers.len();
+        out.push(DeviceTemplate {
+            template_key: format!("ws-slave:{slave_id}"),
+            name: slave_name,
+            category: "Workspace".into(),
+            description: format!(
+                "Routes to {} unit {} · {} register{}",
+                conn_kind, unit_id, count, if count == 1 { "" } else { "s" }
+            ),
+            icon: "🔗".into(),
+            registers,
+        });
+    }
+
+    Ok(out)
 }
 
 #[tauri::command]
@@ -2726,6 +2870,38 @@ pub async fn simulator_start(
                 &app, &ws, *slave_unit as i64, connection_kind,
             );
             *src_addr = (*src_addr as i64 + offset).clamp(0, 65535) as u16;
+        }
+    }
+
+    // Establish the route source client session(s) up front so route registers
+    // can read immediately on Start — routing no longer depends on the
+    // slave/client page being actively connected. Reuses an existing shared
+    // session when present (a serial port is never opened twice). Non-fatal:
+    // the server still starts; an unreachable source just shows as MISSING, and
+    // the reason is logged to the workspace log. Deduped per connection kind
+    // (one session per workspace per kind serves every unit).
+    {
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for d in dynamics.iter() {
+            let DynKind::Route { slave_unit, connection_kind, .. } = &d.kind else { continue };
+            if !seen.insert(connection_kind.clone()) { continue; }
+            if let Err(e) = crate::modbus::ensure_route_session(
+                &modbus, &app, &ws, connection_kind, *slave_unit as i64,
+            ).await {
+                let _ = crate::logs::log_event(
+                    app.clone(),
+                    crate::logs::LogEventInput {
+                        scope: "workspace".into(),
+                        level: "warn".into(),
+                        workspace_name: Some(ws.clone()),
+                        source: "simulator".into(),
+                        message: format!(
+                            "Route source connection failed ({connection_kind}); routed registers will show MISSING until it is reachable: {e}"
+                        ),
+                        details_json: None,
+                    },
+                );
+            }
         }
     }
 
@@ -4151,6 +4327,43 @@ mod tests {
         let rows = db_list_registers(&c).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].device_instance_id, Some(device_id), "read path must carry device_instance_id");
+    }
+
+    #[test]
+    fn slave_row_maps_to_route_register() {
+        // Holding register on unit 3 over serial → route reg mirroring it.
+        let r = slave_row_to_route_register(3, "serial", 3, 40, "Temperature", "u16", "");
+        assert_eq!(r.bank, 3);
+        assert_eq!(r.offset, 40);
+        assert_eq!(r.data_type, "u16");
+        assert_eq!(r.byte_order, "ABCD");
+        assert_eq!(r.value_source, "route");
+        assert_eq!(r.alias, "Temperature");
+        let p: serde_json::Value = serde_json::from_str(&r.source_params).unwrap();
+        assert_eq!(p["slaveUnitId"], 3);
+        assert_eq!(p["connectionKind"], "serial");
+        assert_eq!(p["functionCode"], 3);
+        assert_eq!(p["address"], 40);
+        assert_eq!(p["scale"], 1.0);
+        assert_eq!(p["offset"], 0.0);
+        // The synthetic template must survive catalog validation (so inline add works).
+        let t = DeviceTemplate {
+            template_key: "ws-slave:1".into(), name: "SHT20".into(), category: "Workspace".into(),
+            description: "".into(), icon: "🔗".into(), registers: vec![r],
+        };
+        assert!(validate_template(&t).is_ok());
+    }
+
+    #[test]
+    fn slave_bit_row_forces_bool_and_preserves_order_for_words() {
+        // Coil → bool/ABCD regardless of stored type/order.
+        let bit = slave_row_to_route_register(1, "tcp", 1, 5, "Run", "u16", "DCBA");
+        assert_eq!(bit.data_type, "bool");
+        assert_eq!(bit.byte_order, "ABCD");
+        // Multi-word holding preserves a real byte order.
+        let word = slave_row_to_route_register(1, "tcp", 3, 100, "Power", "f32", "CDAB");
+        assert_eq!(word.data_type, "f32");
+        assert_eq!(word.byte_order, "CDAB");
     }
 
     #[test]

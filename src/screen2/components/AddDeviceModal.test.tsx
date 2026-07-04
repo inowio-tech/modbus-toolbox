@@ -49,4 +49,20 @@ describe("AddDeviceModal wizard", () => {
     expect(screen.getByRole("button", { name: /create/i })).toBeDisabled();
     expect(screen.getByText(/device name is required/i)).toBeInTheDocument();
   });
+
+  it("lists a workspace-slave device under its own category and submits its key", () => {
+    const slaveTpl = {
+      templateKey: "ws-slave:7", name: "SHT20", category: "Workspace",
+      description: "Routes to serial unit 3 · 2 registers", icon: "🔗",
+      registers: [{ offset: 1, bank: 4, dataType: "u16", byteOrder: "ABCD", valueSource: "route",
+        sourceParams: '{"slaveUnitId":3,"connectionKind":"serial","functionCode":4,"address":1,"scale":1,"offset":0}', alias: "Temperature" }],
+    };
+    const onSubmit = vi.fn();
+    render(<AddDeviceModal open templates={[...T, slaveTpl]} onClose={vi.fn()} onSubmit={onSubmit} />);
+    fireEvent.click(screen.getByRole("button", { name: "Workspace" })); // category filter
+    fireEvent.click(screen.getByText("SHT20"));
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    fireEvent.click(screen.getByRole("button", { name: /create/i }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ templateKey: "ws-slave:7", deviceName: "SHT20" }));
+  });
 });

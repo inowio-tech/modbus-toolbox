@@ -45,19 +45,22 @@ export function useSimulatorData(ws: string) {
 
   const reload = useCallback(async () => {
     try {
-      const [cfg, regs, rls, st, templates, devs] = await Promise.all([
+      const [cfg, regs, rls, st, templates, slaveTemplates, devs] = await Promise.all([
         invoke<SimConfig>("simulator_get_config", { name: ws }),
         invoke<PageRegister[]>("simulator_list_registers", { name: ws }),
         invoke<SimRule[]>("simulator_list_rules", { name: ws }),
         invoke<SimStatus>("simulator_status", { name: ws }),
         invoke<DeviceTemplate[]>("simulator_list_device_templates"),
+        invoke<DeviceTemplate[]>("simulator_list_slave_device_templates", { name: ws }),
         invoke<SimDevice[]>("simulator_list_devices", { name: ws }),
       ]);
       setConfig(cfg);
       setRegisters(regs ?? []);
       setRules(rls);
       setStatus(st);
-      setDeviceTemplates(templates);
+      // Workspace-slave devices lead so they surface first in the Add Device
+      // gallery (they're the most contextual: "expose a device I already have").
+      setDeviceTemplates([...(slaveTemplates ?? []), ...(templates ?? [])]);
       setDevices(devs ?? []);
     } catch (e) {
       setError(String(e));
@@ -185,6 +188,21 @@ export function useSimulatorData(ws: string) {
     } catch (e) { setError(String(e)); }
   }, [ws, reload]);
 
+  // Instantiate a device from an inline template (a "Workspace" slave device
+  // whose route map is built on the fly, not in the shared catalog).
+  const addSlaveDevice = useCallback(async (template: DeviceTemplate, payload: AddDevicePayload) => {
+    try {
+      await invoke("simulator_add_inline_device", {
+        name: ws,
+        template,
+        deviceName: payload.deviceName,
+        unitId: payload.unitId,
+        baseAddress: payload.baseAddress,
+      });
+      await reload();
+    } catch (e) { setError(String(e)); }
+  }, [ws, reload]);
+
   const updateDevice = useCallback(async (device: SimDevice) => {
     try { await invoke("simulator_update_device", { name: ws, device }); await reload(); }
     catch (e) { setError(String(e)); }
@@ -272,7 +290,7 @@ export function useSimulatorData(ws: string) {
     deviceTemplates, error, busy, lastUpdated,
     reload, saveConfig, start, stop,
     addRegister, updateRegister, deleteRegister, duplicateRegister,
-    addDevice, updateDevice, deleteDevice, renameDevice, rebaseDevice,
+    addDevice, addSlaveDevice, updateDevice, deleteDevice, renameDevice, rebaseDevice,
     addRule, updateRule, deleteRule,
     exportProfile, importProfile, buildDeviceTemplate, saveCustomTemplate,
     setError,

@@ -262,7 +262,17 @@ export default function TcpSimulatorPage() {
         templates={sim.deviceTemplates}
         existingRegisters={sim.registers}
         onClose={() => setDeviceModalOpen(false)}
-        onSubmit={async (payload) => { await sim.addDevice(payload); setDeviceModalOpen(false); }}
+        onSubmit={async (payload) => {
+          // "Workspace" slave devices aren't in the shared catalog — their route
+          // map is inline on the selected template, so add them via the inline path.
+          const tpl = sim.deviceTemplates.find((t) => t.templateKey === payload.templateKey);
+          if (tpl && payload.templateKey.startsWith("ws-slave:")) {
+            await sim.addSlaveDevice(tpl, payload);
+          } else {
+            await sim.addDevice(payload);
+          }
+          setDeviceModalOpen(false);
+        }}
       />
 
       <SimRuleModal
