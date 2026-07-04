@@ -1,13 +1,13 @@
 import { useCallback, useMemo, useState } from "react";
-import { FiDownload, FiUpload, FiX } from "react-icons/fi";
+import { FiDownload, FiTrash2, FiUpload, FiX } from "react-icons/fi";
 import { useOutletContext } from "react-router-dom";
 
 import type { Screen2OutletContext } from "../Screen2Layout";
+import ConfirmDialog from "../../components/ConfirmDialog";
 import AddDeviceModal from "../components/AddDeviceModal";
 import SimRegisterModal, { type SimRegister } from "../components/SimRegisterModal";
 import SimRuleModal, { type SimRule } from "../components/SimRuleModal";
 import ActivityTab from "../simulator/ActivityTab";
-import ConfirmDialog from "../simulator/ConfirmDialog";
 import DevicesTab from "../simulator/DevicesTab";
 import LiveValuesTab from "../simulator/LiveValuesTab";
 import PromptDialog from "../simulator/PromptDialog";
@@ -278,13 +278,21 @@ export default function TcpSimulatorPage() {
 
       <ConfirmDialog
         open={confirmDeleteDevice !== null}
-        title="Delete device?"
-        message={
-          confirmDeleteDevice
-            ? `Delete "${confirmDeleteDevice.name}" and all ${sim.registers.filter((r) => r.deviceInstanceId === confirmDeleteDevice.id).length} of its registers? This can't be undone.`
-            : ""
+        tone="danger"
+        title="Delete device"
+        description={
+          confirmDeleteDevice ? (
+            <>
+              <p className="mb-2">
+                Delete <span className="font-semibold text-emerald-700 dark:text-emerald-300">{confirmDeleteDevice.name}</span> and all{" "}
+                {sim.registers.filter((r) => r.deviceInstanceId === confirmDeleteDevice.id).length} of its registers?
+              </p>
+              <p className="text-[11px] text-slate-600 dark:text-slate-400">This action cannot be undone.</p>
+            </>
+          ) : null
         }
-        confirmLabel="Delete device"
+        confirmIcon={<FiTrash2 className="h-4 w-4" aria-hidden="true" />}
+        confirmText="Delete device"
         onConfirm={() => {
           if (confirmDeleteDevice) void sim.deleteDevice(confirmDeleteDevice.id);
           setConfirmDeleteDevice(null);
@@ -294,19 +302,30 @@ export default function TcpSimulatorPage() {
 
       <ConfirmDialog
         open={confirmDeleteRegister !== null}
-        title="Delete register?"
-        message={(() => {
-          if (!confirmDeleteRegister) return "";
+        tone="danger"
+        title="Delete register"
+        description={(() => {
+          if (!confirmDeleteRegister) return null;
           const r = confirmDeleteRegister;
-          const name = r.alias?.trim() ? `"${r.alias.trim()}"` : `register at unit ${r.unitId}, address ${r.address}`;
+          const label = r.alias?.trim() ? r.alias.trim() : `unit ${r.unitId}, address ${r.address}`;
           const lastOfDevice =
             r.deviceInstanceId != null &&
             sim.registers.filter((x) => x.deviceInstanceId === r.deviceInstanceId).length === 1;
           const dev = lastOfDevice ? sim.devices.find((d) => d.id === r.deviceInstanceId) : undefined;
-          const tail = dev ? ` This is the last register of device "${dev.name}", which will also be removed.` : "";
-          return `Delete ${name}? This can't be undone.${tail}`;
+          return (
+            <>
+              <p className="mb-2">
+                Delete <span className="font-semibold text-emerald-700 dark:text-emerald-300">{label}</span>?
+              </p>
+              {dev ? (
+                <p className="mb-2">This is the last register of device "{dev.name}", which will also be removed.</p>
+              ) : null}
+              <p className="text-[11px] text-slate-600 dark:text-slate-400">This action cannot be undone.</p>
+            </>
+          );
         })()}
-        confirmLabel="Delete register"
+        confirmIcon={<FiTrash2 className="h-4 w-4" aria-hidden="true" />}
+        confirmText="Delete register"
         onConfirm={() => {
           if (confirmDeleteRegister) void deleteRegister(confirmDeleteRegister.id);
           setConfirmDeleteRegister(null);
@@ -316,11 +335,11 @@ export default function TcpSimulatorPage() {
 
       <PromptDialog
         open={saveTemplateDevice !== null}
-        title="Save device as template"
-        label="Template name"
+        title="Save as virtual device"
+        label="Virtual device name"
         initialValue={saveTemplateDevice?.name ?? ""}
-        hint="Saves this device's register layout as a reusable template in the Device Builder — available in every workspace's Add Device gallery."
-        submitLabel="Save template"
+        hint="Saves this device's register layout as a reusable virtual device (Workspaces screen → Virtual Devices), available in every workspace's Add Device gallery."
+        submitLabel="Save device"
         validate={(v) => (v.trim() === "" ? "Name is required" : null)}
         onSubmit={(v) => {
           if (saveTemplateDevice) void sim.saveDeviceAsTemplate(saveTemplateDevice.id, v.trim());

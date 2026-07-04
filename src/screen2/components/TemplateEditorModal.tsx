@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { FiTrash2 } from "react-icons/fi";
+import { RiCloseLine } from "react-icons/ri";
 
 import type { DeviceTemplate, TemplateRegister } from "./AddDeviceModal";
 
@@ -61,8 +62,14 @@ export default function TemplateEditorModal(props: {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm">
       <div role="dialog" aria-modal="true" aria-labelledby="tpl-editor-title"
         className="flex max-h-[90vh] w-full max-w-4xl flex-col rounded-2xl border border-slate-200 bg-white p-6 text-slate-900 shadow-2xl dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100">
-        <div id="tpl-editor-title" className="mb-4 shrink-0 text-sm font-semibold text-emerald-700 dark:text-emerald-400">
-          {isEdit ? "Edit template" : "New template"}
+        <div className="mb-4 flex shrink-0 items-center justify-between gap-2">
+          <div id="tpl-editor-title" className="min-w-0 truncate text-sm font-semibold text-emerald-700 dark:text-emerald-200">
+            {isEdit ? "Edit virtual device" : "New virtual device"}
+          </div>
+          <button type="button" onClick={props.onClose} title="Close"
+            className="flex items-center gap-1 rounded-full border border-slate-300 bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-400 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-500">
+            <RiCloseLine className="h-4 w-3" aria-hidden="true" />
+          </button>
         </div>
 
         <div className="-mx-1 min-h-0 flex-1 space-y-4 overflow-y-auto px-1">
@@ -175,7 +182,7 @@ export default function TemplateEditorModal(props: {
           </button>
           <button type="button" disabled={!valid} onClick={() => void props.onSave({ ...t, templateKey: keyTrim })}
             className="rounded-full border border-emerald-600/60 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-800 disabled:opacity-50 dark:border-emerald-500/60 dark:text-emerald-200">
-            Save template
+            Save device
           </button>
         </div>
       </div>

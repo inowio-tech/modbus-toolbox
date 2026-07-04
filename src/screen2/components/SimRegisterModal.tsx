@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { RiCloseLine } from "react-icons/ri";
 
 export type SimRegister = {
   id: number;
@@ -168,8 +169,14 @@ export default function SimRegisterModal(props: {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm">
       <div role="dialog" aria-modal="true" aria-labelledby="sim-reg-title"
         className="w-full max-w-lg rounded-2xl border border-slate-200 bg-white p-6 text-slate-900 shadow-2xl dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100">
-        <div id="sim-reg-title" className="mb-4 text-sm font-semibold text-emerald-700 dark:text-emerald-400">
-          {reg.id ? "Edit register" : "Add register"}
+        <div className="mb-4 flex items-center justify-between gap-2">
+          <div id="sim-reg-title" className="min-w-0 truncate text-sm font-semibold text-emerald-700 dark:text-emerald-200">
+            {reg.id ? "Edit register" : "Add register"}
+          </div>
+          <button type="button" onClick={props.onClose} title="Close"
+            className="flex items-center gap-1 rounded-full border border-slate-300 bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-400 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-500">
+            <RiCloseLine className="h-4 w-3" aria-hidden="true" />
+          </button>
         </div>
 
         <div className="grid grid-cols-2 gap-3">

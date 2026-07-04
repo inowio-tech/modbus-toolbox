@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { RiCloseLine } from "react-icons/ri";
 
 export type SimRule = {
   id: number;
@@ -237,8 +238,14 @@ export default function SimRuleModal(props: {
         aria-labelledby="sim-rule-title"
         className="w-full max-w-2xl rounded-2xl border border-slate-200 bg-white p-6 text-slate-900 shadow-2xl dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100"
       >
-        <div id="sim-rule-title" className="mb-4 text-sm font-semibold text-emerald-700 dark:text-emerald-400">
-          {rule.id ? "Edit rule" : "Add rule"}
+        <div className="mb-4 flex items-center justify-between gap-2">
+          <div id="sim-rule-title" className="min-w-0 truncate text-sm font-semibold text-emerald-700 dark:text-emerald-200">
+            {rule.id ? "Edit rule" : "Add rule"}
+          </div>
+          <button type="button" onClick={props.onClose} title="Close"
+            className="flex items-center gap-1 rounded-full border border-slate-300 bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-400 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-500">
+            <RiCloseLine className="h-4 w-3" aria-hidden="true" />
+          </button>
         </div>
 
         <div className="grid grid-cols-2 gap-3">

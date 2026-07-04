@@ -20,7 +20,7 @@ describe("TemplateEditorModal", () => {
 
   it("blocks Save until a key and name are present, and on a key clash", () => {
     render(<TemplateEditorModal open initial={null} takenKeys={["taken_key"]} onClose={vi.fn()} onSave={vi.fn()} />);
-    const save = screen.getByRole("button", { name: /save template/i });
+    const save = screen.getByRole("button", { name: /save device/i });
     expect(save).toBeDisabled(); // blank key + name
     fireEvent.change(screen.getByLabelText(/template name/i), { target: { value: "New" } });
     fireEvent.change(screen.getByLabelText(/template key/i), { target: { value: "taken_key" } });
@@ -34,7 +34,7 @@ describe("TemplateEditorModal", () => {
     const onSave = vi.fn();
     render(<TemplateEditorModal open initial={custom} takenKeys={["custom_x"]} onClose={vi.fn()} onSave={onSave} />);
     expect(screen.getByLabelText(/template key/i)).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: /save template/i }));
+    fireEvent.click(screen.getByRole("button", { name: /save device/i }));
     expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ templateKey: "custom_x", name: "My Device" }));
   });
 

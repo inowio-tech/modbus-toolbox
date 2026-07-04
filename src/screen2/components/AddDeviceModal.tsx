@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { RiCloseLine } from "react-icons/ri";
 
 export type TemplateRegister = {
   offset: number;
@@ -154,17 +155,23 @@ export default function AddDeviceModal(props: {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm">
       <div role="dialog" aria-modal="true" aria-labelledby="add-device-title"
         className="flex max-h-[90vh] w-full max-w-5xl flex-col rounded-2xl border border-slate-200 bg-white p-6 text-slate-900 shadow-2xl dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100">
-        <div className="mb-4 flex shrink-0 items-center justify-between">
-          <div id="add-device-title" className="text-sm font-semibold text-emerald-700 dark:text-emerald-400">
+        <div className="mb-4 flex shrink-0 items-center justify-between gap-2">
+          <div id="add-device-title" className="text-sm font-semibold text-emerald-700 dark:text-emerald-200">
             Add device
           </div>
-          <div className="flex items-center gap-2 text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400">
-            {STEPS.map((s, i) => (
-              <span key={s} className={i === stepIndex ? "font-semibold text-emerald-700 dark:text-emerald-300" : ""}>
-                {i > 0 && <span className="mx-1">›</span>}
-                {STEP_LABEL[s]}
-              </span>
-            ))}
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400">
+              {STEPS.map((s, i) => (
+                <span key={s} className={i === stepIndex ? "font-semibold text-emerald-700 dark:text-emerald-300" : ""}>
+                  {i > 0 && <span className="mx-1">›</span>}
+                  {STEP_LABEL[s]}
+                </span>
+              ))}
+            </div>
+            <button type="button" onClick={props.onClose} title="Close"
+              className="flex items-center gap-1 rounded-full border border-slate-300 bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-400 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-500">
+              <RiCloseLine className="h-4 w-3" aria-hidden="true" />
+            </button>
           </div>
         </div>
 

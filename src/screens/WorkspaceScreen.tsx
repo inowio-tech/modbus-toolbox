@@ -8,6 +8,7 @@ import ImportConflictModal from "../components/ImportConflictModal";
 import { useErrorToast, useToast } from "../components/ToastProvider";
 import ThemeToggleButton from "../components/ThemeToggleButton";
 import { AppLogEntry, listAppLogs, LogLevel } from "../screen2/api/logs";
+import VirtualDevicesView from "../screen2/pages/VirtualDevicesView";
 import { RiCloseLine } from "react-icons/ri";
 import { useHelp } from "../help/HelpProvider";
 
@@ -29,6 +30,21 @@ export default function WorkspaceScreen({ onOpen }: Props) {
   const [error, setError] = useState<string | null>(null);
 
   const { pushToast } = useToast();
+
+  // Top-level view: the Workspaces list or the app-global Device Builder
+  // (device templates are shared across all workspaces, so they live outside
+  // any one workspace). Persisted like the grid/list view.
+  const [mainTab, setMainTab] = useState<"workspaces" | "devices">(() => {
+    try {
+      return window.localStorage.getItem("inowio.mainTab") === "devices" ? "devices" : "workspaces";
+    } catch {
+      return "workspaces";
+    }
+  });
+  const switchMainTab = (tab: "workspaces" | "devices") => {
+    setMainTab(tab);
+    try { window.localStorage.setItem("inowio.mainTab", tab); } catch { /* ignore */ }
+  };
 
   const [search, setSearch] = useState("");
   const [view, setView] = useState<"grid" | "list">(() => {
@@ -377,11 +393,30 @@ export default function WorkspaceScreen({ onOpen }: Props) {
       </header>
       <div className="flex min-h-0 flex-1 flex-col">
         <div className="flex flex-wrap items-center gap-3 border-b border-slate-200 bg-white/60 px-4 py-3 dark:border-slate-800 dark:bg-slate-900/40">
-          <div className="text-xs font-semibold uppercase tracking-[0.25em] text-emerald-700 dark:text-emerald-300">
-            Workspaces
-            <span className="ml-2 font-mono text-sm tracking-normal text-slate-700 dark:text-slate-200">{workspaces.length}</span>
+          <div role="tablist" aria-label="Main sections" className="inline-flex items-center rounded-full border border-slate-300 bg-slate-100 p-0.5 text-xs font-semibold uppercase tracking-[0.15em] dark:border-slate-700 dark:bg-white/5">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mainTab === "workspaces"}
+              onClick={() => switchMainTab("workspaces")}
+              className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 transition ${mainTab === "workspaces" ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-200" : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"}`}
+            >
+              Workspaces
+              <span className="font-mono text-[11px] tracking-normal">{workspaces.length}</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mainTab === "devices"}
+              onClick={() => switchMainTab("devices")}
+              className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 transition ${mainTab === "devices" ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-200" : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"}`}
+            >
+              Virtual Devices
+            </button>
           </div>
 
+          {mainTab === "workspaces" ? (
+          <>
           <div className="relative min-w-45 flex-1 sm:max-w-md">
             <FiSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500" aria-hidden="true" />
             <input
@@ -470,6 +505,8 @@ export default function WorkspaceScreen({ onOpen }: Props) {
               <FiRefreshCcw className="h-4 w-4" aria-hidden="true" />
             </button>
           </div>
+          </>
+          ) : null}
         </div>
 
         {error ? (
@@ -479,6 +516,10 @@ export default function WorkspaceScreen({ onOpen }: Props) {
         ) : null}
 
         <div className="min-h-0 flex-1 overflow-y-auto p-4">
+                {mainTab === "devices" ? (
+                  <VirtualDevicesView />
+                ) : (
+                <>
                 {loading ? <div className="flex items-center gap-2 p-2 text-sm text-slate-600 dark:text-slate-300 animate-pulse">
                   <FiRefreshCcw className="h-4 w-4 animate-spin" aria-hidden="true" />
                   Loading...
@@ -725,6 +766,8 @@ export default function WorkspaceScreen({ onOpen }: Props) {
                     </table>
                   </div>
                 ) : null}
+                </>
+                )}
         </div>
       </div>
 
