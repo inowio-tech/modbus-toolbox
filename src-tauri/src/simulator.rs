@@ -1444,7 +1444,7 @@ pub fn builtin_templates() -> Vec<DeviceTemplate> {
             template_key: "temp_humidity".into(),
             name: "Temp/Humidity Sensor".into(),
             category: "Sensors".into(),
-            description: "Temperature + humidity transmitter (SHT20-style)".into(),
+            description: "Temperature + humidity transmitter".into(),
             icon: "🌡️".into(),
             registers: vec![
                 treg(0, 4, "u16", "ABCD", "device", r#"{"preset":"temperature","min":18,"max":28}"#, "Temperature"),
@@ -1455,7 +1455,7 @@ pub fn builtin_templates() -> Vec<DeviceTemplate> {
             template_key: "ac_energy_meter".into(),
             name: "AC Energy Meter".into(),
             category: "Power".into(),
-            description: "AC energy/power meter (SDM/PZEM-style)".into(),
+            description: "AC energy/power meter".into(),
             icon: "⚡".into(),
             registers: vec![
                 treg(0, 4, "f32", "ABCD", "device", r#"{"preset":"analog","min":220,"max":240}"#, "Voltage"),

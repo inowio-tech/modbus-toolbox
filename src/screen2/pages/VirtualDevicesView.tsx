@@ -1,12 +1,24 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { FiDownload, FiEdit2, FiPlus, FiTrash2, FiUpload } from "react-icons/fi";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useState } from "react";
+import { FiEdit2, FiTrash2, FiUpload } from "react-icons/fi";
 
 import ConfirmDialog from "../../components/ConfirmDialog";
 import type { DeviceTemplate } from "../components/AddDeviceModal";
 import TemplateEditorModal from "../components/TemplateEditorModal";
 
-export default function VirtualDevicesView() {
+/** Imperative actions the parent toolbar triggers (New / Import live up there). */
+export type VirtualDevicesHandle = { openNew: () => void; importDevice: () => void };
+
+const matchesQuery = (t: DeviceTemplate, q: string) =>
+  q === "" ||
+  t.name.toLowerCase().includes(q) ||
+  t.category.toLowerCase().includes(q) ||
+  (t.description ?? "").toLowerCase().includes(q);
+
+const VirtualDevicesView = forwardRef<VirtualDevicesHandle, { search?: string }>(function VirtualDevicesView(
+  { search = "" },
+  ref,
+) {
   const [templates, setTemplates] = useState<DeviceTemplate[]>([]);
   const [customKeys, setCustomKeys] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
@@ -32,8 +44,17 @@ export default function VirtualDevicesView() {
   const isCustom = useCallback((key: string) => customKeys.has(key), [customKeys]);
   const takenKeys = useMemo(() => templates.map((t) => t.templateKey), [templates]);
 
-  const openNew = () => { setEditing(null); setEditorOpen(true); };
+  const openNew = useCallback(() => { setEditing(null); setEditorOpen(true); }, []);
   const openEdit = (t: DeviceTemplate) => { setEditing(t); setEditorOpen(true); };
+
+  const handleImport = useCallback(async () => {
+    try {
+      const imported = await invoke<DeviceTemplate | null>("simulator_import_custom_template");
+      if (imported) await reload();
+    } catch (e) { setError(String(e)); }
+  }, [reload]);
+
+  useImperativeHandle(ref, () => ({ openNew, importDevice: () => void handleImport() }), [openNew, handleImport]);
 
   const handleSave = async (t: DeviceTemplate) => {
     try {
@@ -49,20 +70,15 @@ export default function VirtualDevicesView() {
     catch (e) { setError(String(e)); }
   };
 
-  const handleImport = async () => {
-    try {
-      const imported = await invoke<DeviceTemplate | null>("simulator_import_custom_template");
-      if (imported) await reload();
-    } catch (e) { setError(String(e)); }
-  };
-
   const handleExport = async (key: string) => {
     try { await invoke("simulator_export_template", { templateKey: key }); }
     catch (e) { setError(String(e)); }
   };
 
-  const builtIns = templates.filter((t) => !isCustom(t.templateKey));
-  const customs = templates.filter((t) => isCustom(t.templateKey));
+  const q = search.trim().toLowerCase();
+  const builtIns = templates.filter((t) => !isCustom(t.templateKey) && matchesQuery(t, q));
+  const customs = templates.filter((t) => isCustom(t.templateKey) && matchesQuery(t, q));
+  const searching = q !== "";
 
   const card = (t: DeviceTemplate, custom: boolean) => (
     <div key={t.templateKey} className="flex flex-col gap-2 rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-white/5">
@@ -110,23 +126,8 @@ export default function VirtualDevicesView() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="text-sm font-semibold uppercase tracking-[0.35em] text-emerald-700 dark:font-normal dark:text-emerald-300">Virtual Device Builder</p>
-          <div className="mt-2 max-w-2xl text-sm text-slate-600 dark:text-slate-300">
-            Virtual devices are reusable register-map templates shared across every workspace — add one from a workspace's TCP Simulator → Add Device. Built-in devices can be cloned; custom ones can be edited, exported to share, or deleted. Import a shared <code>.json</code> to use someone else's device.
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <button type="button" onClick={() => void handleImport()}
-            className="inline-flex items-center gap-1.5 rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:border-slate-400 dark:border-slate-700 dark:bg-white/5 dark:text-slate-200">
-            <FiDownload className="h-3.5 w-3.5" aria-hidden="true" /> Import Device
-          </button>
-          <button type="button" onClick={openNew}
-            className="inline-flex items-center gap-1.5 rounded-full border border-emerald-600/60 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-800 transition hover:border-emerald-500 dark:border-emerald-500/60 dark:text-emerald-200">
-            <FiPlus className="h-3.5 w-3.5" aria-hidden="true" /> New Device
-          </button>
-        </div>
+      <div className="max-w-3xl text-sm text-slate-600 dark:text-slate-300">
+        Virtual devices are reusable register-map templates shared across every workspace — add one from a workspace's TCP Simulator → Add Device. Built-in devices can be cloned; custom ones can be edited, exported to share, or deleted. Import a shared <code>.json</code> to use someone else's device.
       </div>
 
       {error ? (
@@ -142,7 +143,7 @@ export default function VirtualDevicesView() {
         </div>
         {customs.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400">
-            No custom devices yet. Create one, clone a built-in, or import a shared <code>.json</code>.
+            {searching ? "No custom devices match your search." : <>No custom devices yet. Create one, clone a built-in, or import a shared <code>.json</code>.</>}
           </div>
         ) : (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{customs.map((t) => card(t, true))}</div>
@@ -151,7 +152,13 @@ export default function VirtualDevicesView() {
 
       <div>
         <div className="mb-2 text-sm font-semibold text-slate-900 dark:text-slate-100">Built-in Devices <span className="text-slate-400">· {builtIns.length}</span></div>
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{builtIns.map((t) => card(t, false))}</div>
+        {builtIns.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400">
+            No built-in devices match your search.
+          </div>
+        ) : (
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{builtIns.map((t) => card(t, false))}</div>
+        )}
       </div>
 
       <TemplateEditorModal
@@ -183,4 +190,6 @@ export default function VirtualDevicesView() {
       />
     </div>
   );
-}
+});
+
+export default VirtualDevicesView;

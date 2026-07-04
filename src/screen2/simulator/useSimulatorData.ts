@@ -237,20 +237,29 @@ export function useSimulatorData(ws: string) {
     } catch (e) { setError(String(e)); return false; }
   }, [ws, reload]);
 
-  // Promote a configured live device into the app-global template catalog so it
-  // can be reused/shared. Derives a key from the name; the user can refine it in
-  // the Device Builder. Returns true on success.
-  const saveDeviceAsTemplate = useCallback(async (deviceId: number, templateName: string): Promise<boolean> => {
+  // Build a *pre-filled draft* from a configured live device: its full register
+  // layout captured as a DeviceTemplate the user can review/refine in the editor
+  // before saving. A key is suggested from the name (editable + clash-guarded in
+  // the editor). Returns null on failure.
+  const buildDeviceTemplate = useCallback(async (deviceId: number, deviceName: string): Promise<DeviceTemplate | null> => {
     try {
-      const slug = templateName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
-      const template = await invoke<DeviceTemplate>("simulator_device_to_template", {
+      const slug = deviceName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+      return await invoke<DeviceTemplate>("simulator_device_to_template", {
         name: ws, deviceId, templateKey: `custom_${slug || "device"}`,
-        templateName: templateName.trim(), category: "Custom", icon: "📟", description: "",
+        templateName: deviceName.trim() || "New device", category: "Custom", icon: "📟", description: "",
       });
+    } catch (e) { setError(String(e)); return null; }
+  }, [ws]);
+
+  // Persist a custom (app-global) device template, then reload so the in-workspace
+  // Add Device gallery reflects it immediately. Returns true on success.
+  const saveCustomTemplate = useCallback(async (template: DeviceTemplate): Promise<boolean> => {
+    try {
       await invoke("simulator_save_custom_template", { template });
+      await reload();
       return true;
     } catch (e) { setError(String(e)); return false; }
-  }, [ws]);
+  }, [reload]);
 
   const snapshotFor = useCallback(
     (unitId: number, fc: number, address: number): SnapshotRow | undefined =>
@@ -265,7 +274,7 @@ export function useSimulatorData(ws: string) {
     addRegister, updateRegister, deleteRegister, duplicateRegister,
     addDevice, updateDevice, deleteDevice, renameDevice, rebaseDevice,
     addRule, updateRule, deleteRule,
-    exportProfile, importProfile, saveDeviceAsTemplate,
+    exportProfile, importProfile, buildDeviceTemplate, saveCustomTemplate,
     setError,
     snapshotFor,
   };

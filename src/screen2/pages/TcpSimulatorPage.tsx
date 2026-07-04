@@ -4,7 +4,10 @@ import { useOutletContext } from "react-router-dom";
 
 import type { Screen2OutletContext } from "../Screen2Layout";
 import ConfirmDialog from "../../components/ConfirmDialog";
+import { useToast } from "../../components/ToastProvider";
 import AddDeviceModal from "../components/AddDeviceModal";
+import TemplateEditorModal from "../components/TemplateEditorModal";
+import type { DeviceTemplate } from "../components/AddDeviceModal";
 import SimRegisterModal, { type SimRegister } from "../components/SimRegisterModal";
 import SimRuleModal, { type SimRule } from "../components/SimRuleModal";
 import ActivityTab from "../simulator/ActivityTab";
@@ -53,6 +56,7 @@ export default function TcpSimulatorPage() {
   const { workspace } = useOutletContext<Screen2OutletContext>();
   const ws = workspace.name;
   const sim = useSimulatorData(ws);
+  const { pushToast } = useToast();
 
   const [activeTab, setActiveTab] = useState<TabKey>(() => readTab(ws));
   const [addrFmt, setAddrFmt] = useState<AddressFormat>(() => readAddressFormat(ws));
@@ -64,7 +68,9 @@ export default function TcpSimulatorPage() {
   const [deviceEdit, setDeviceEdit] = useState<{ kind: "rename" | "rebase"; device: SimDevice } | null>(null);
   const [confirmDeleteDevice, setConfirmDeleteDevice] = useState<SimDevice | null>(null);
   const [confirmDeleteRegister, setConfirmDeleteRegister] = useState<PageRegister | null>(null);
-  const [saveTemplateDevice, setSaveTemplateDevice] = useState<SimDevice | null>(null);
+  // Pre-filled draft for "Save as virtual device" (null = closed). Opens the full
+  // template editor so the layout is visible and the key is clash-guarded.
+  const [saveTemplateDraft, setSaveTemplateDraft] = useState<DeviceTemplate | null>(null);
 
   const changeTab = useCallback((tab: TabKey) => { setActiveTab(tab); writeTab(ws, tab); }, [ws]);
   const changeAddrFmt = useCallback((f: AddressFormat) => { setAddrFmt(f); writeAddressFormat(ws, f); }, [ws]);
@@ -93,6 +99,11 @@ export default function TcpSimulatorPage() {
 
   const handleRename = useCallback((device: SimDevice) => setDeviceEdit({ kind: "rename", device }), []);
   const handleRebase = useCallback((device: SimDevice) => setDeviceEdit({ kind: "rebase", device }), []);
+
+  const handleSaveAsTemplate = useCallback(async (device: SimDevice) => {
+    const draft = await sim.buildDeviceTemplate(device.id, device.name);
+    if (draft) setSaveTemplateDraft(draft);
+  }, [sim]);
 
   const handleExportProfile = useCallback(() => { void sim.exportProfile(); }, [sim]);
 
@@ -194,7 +205,7 @@ export default function TcpSimulatorPage() {
               onRename={handleRename}
               onRebase={handleRebase}
               onDelete={(device) => setConfirmDeleteDevice(device)}
-              onSaveAsTemplate={(device) => setSaveTemplateDevice(device)}
+              onSaveAsTemplate={(device) => void handleSaveAsTemplate(device)}
             />
           ) : null}
 
@@ -333,19 +344,19 @@ export default function TcpSimulatorPage() {
         onClose={() => setConfirmDeleteRegister(null)}
       />
 
-      <PromptDialog
-        open={saveTemplateDevice !== null}
-        title="Save as virtual device"
-        label="Virtual device name"
-        initialValue={saveTemplateDevice?.name ?? ""}
-        hint="Saves this device's register layout as a reusable virtual device (Workspaces screen → Virtual Devices), available in every workspace's Add Device gallery."
-        submitLabel="Save device"
-        validate={(v) => (v.trim() === "" ? "Name is required" : null)}
-        onSubmit={(v) => {
-          if (saveTemplateDevice) void sim.saveDeviceAsTemplate(saveTemplateDevice.id, v.trim());
-          setSaveTemplateDevice(null);
+      <TemplateEditorModal
+        open={saveTemplateDraft !== null}
+        initial={saveTemplateDraft}
+        forceNew
+        takenKeys={sim.deviceTemplates.map((t) => t.templateKey)}
+        onClose={() => setSaveTemplateDraft(null)}
+        onSave={async (t) => {
+          const ok = await sim.saveCustomTemplate(t);
+          if (ok) {
+            pushToast(`Saved “${t.name}” to Virtual Devices`, "info");
+            setSaveTemplateDraft(null);
+          }
         }}
-        onClose={() => setSaveTemplateDevice(null)}
       />
 
       <PromptDialog
