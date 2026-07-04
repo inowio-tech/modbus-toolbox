@@ -4,6 +4,9 @@ All notable changes to this project are tracked here following [Keep a Changelog
 
 ## [Unreleased]
 
+_No changes yet._
+
+## [0.4.0] - 2026-07-04
 ### Added
 - **TCP Simulator (Modbus TCP server).** Turn the workbench into a Modbus TCP
   server so external masters (SCADA/PLCs/test tools) can poll and write the app
