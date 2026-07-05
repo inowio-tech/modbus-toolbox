@@ -12,12 +12,14 @@ Desktop toolkit for configuring, testing, and monitoring Modbus TCP/RTU devices.
 
 | | |
 | --- | --- |
-| ![Inowio Modbus Workbench screenshot 1](public/screenshots/modbus-workbench-1.jpg) | ![Inowio Modbus Workbench screenshot 2](public/screenshots/modbus-workbench-2.jpg) |
-| ![Inowio Modbus Workbench screenshot 3](public/screenshots/modbus-workbench-3.jpg) | ![Inowio Modbus Workbench screenshot 4](public/screenshots/modbus-workbench-4.jpg) |
-| ![Inowio Modbus Workbench screenshot 5](public/screenshots/modbus-workbench-5.jpg) | ![Inowio Modbus Workbench screenshot 6](public/screenshots/modbus-workbench-6.jpg) |
-| ![Inowio Modbus Workbench screenshot 7](public/screenshots/modbus-workbench-7.jpg) | ![Inowio Modbus Workbench screenshot 8](public/screenshots/modbus-workbench-8.jpg) |
-| ![Inowio Modbus Workbench screenshot 9](public/screenshots/modbus-workbench-9.jpg) | ![Inowio Modbus Workbench screenshot 10](public/screenshots/modbus-workbench-10.jpg) |
-| ![Inowio Modbus Workbench screenshot 11](public/screenshots/modbus-workbench-11.jpg) | |
+| ![Workspaces browser — grid of Modbus workspaces](public/screenshots/modbus-workbench-1.jpg) | ![Virtual Devices — reusable device blueprints shared across workspaces](public/screenshots/modbus-workbench-2.jpg) |
+| ![Workspace information page](public/screenshots/modbus-workbench-3.jpg) | ![Connection settings — Serial (RTU)](public/screenshots/modbus-workbench-4.jpg) |
+| ![Connection settings — Modbus TCP](public/screenshots/modbus-workbench-5.jpg) | ![Slaves list for a workspace](public/screenshots/modbus-workbench-6.jpg) |
+| ![Slave detail — register map, polling, and attachments](public/screenshots/modbus-workbench-7.jpg) | ![Traffic Monitor — live Modbus request/response frames](public/screenshots/modbus-workbench-8.jpg) |
+| ![Analyzer — signal decoder configuration](public/screenshots/modbus-workbench-9.jpg) | ![Analyzer — live value tiles and trend charts](public/screenshots/modbus-workbench-10.jpg) |
+| ![TCP Simulator — devices, with a real slave exposed as a routed device](public/screenshots/modbus-workbench-11.jpg) | ![TCP Simulator — register map routed from a live slave](public/screenshots/modbus-workbench-12.jpg) |
+| ![TCP Simulator — automation rule editor](public/screenshots/modbus-workbench-13.jpg) | ![TCP Simulator — automation rules list](public/screenshots/modbus-workbench-14.jpg) |
+| ![About page](public/screenshots/modbus-workbench-about.jpg) | ![Workspace settings — logging, timing, and retry](public/screenshots/modbus-workbench-settings.jpg) |
 
 ## Highlights
 
