@@ -1,6 +1,6 @@
 [package]
 name = "modbus-workbench"
-version = "0.3.2"
+version = "0.4.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -30,9 +30,10 @@ serde_json = "1"
 rusqlite = { version = "0.31", features = ["bundled"] }
 serialport = "4"
 
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "time", "sync"] }
-tokio-modbus = { version = "0.17", default-features = false, features = ["tcp", "rtu"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "time", "sync", "macros"] }
+tokio-modbus = { version = "0.17", default-features = false, features = ["tcp", "rtu", "tcp-server"] }
 tokio-serial = "5"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+log = "0.4"
 base64 = "0.22"
 zip = "2"

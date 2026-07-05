@@ -164,9 +164,62 @@ pub(crate) fn ensure_workspace_db(workspace_folder: &PathBuf, db_file: &str) -> 
           FOREIGN KEY(tile_id) REFERENCES analyzer_tiles(id) ON DELETE CASCADE,
           FOREIGN KEY(signal_id) REFERENCES analyzer_signals(id) ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS sim_config (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            enabled INTEGER NOT NULL DEFAULT 0,
+            host TEXT NOT NULL DEFAULT '0.0.0.0',
+            port INTEGER NOT NULL DEFAULT 502,
+            tick_ms INTEGER NOT NULL DEFAULT 100,
+            updated_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS sim_devices (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            template_key TEXT,
+            name TEXT NOT NULL,
+            unit_id INTEGER NOT NULL,
+            base_address INTEGER,
+            params TEXT,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            sort_order INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS sim_registers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_instance_id INTEGER REFERENCES sim_devices(id) ON DELETE CASCADE,
+            unit_id INTEGER NOT NULL,
+            function_code INTEGER NOT NULL,
+            address INTEGER NOT NULL,
+            alias TEXT NOT NULL DEFAULT '',
+            data_type TEXT NOT NULL DEFAULT 'u16',
+            byte_order TEXT,
+            display_format TEXT,
+            unit TEXT,
+            value_source TEXT NOT NULL DEFAULT 'hold',
+            source_params TEXT,
+            interval_ms INTEGER,
+            hold_value INTEGER NOT NULL DEFAULT 0,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(unit_id, function_code, address)
+        );
+        CREATE TABLE IF NOT EXISTS sim_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_instance_id INTEGER REFERENCES sim_devices(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            trigger TEXT NOT NULL,
+            actions TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0
+        );
         COMMIT;",
     )
     .map_err(|e| format!("failed to initialize workspace db schema: {e}"))?;
+
+    // Idempotent dev-DB migration: older workspace DBs were created before
+    // `unit`/`display_format` existed on `sim_registers`. Ignore the error
+    // when the column is already present.
+    for col in ["unit TEXT", "display_format TEXT"] {
+        let _ = conn.execute(&format!("ALTER TABLE sim_registers ADD COLUMN {col}"), []);
+    }
 
     conn.execute(
         "INSERT OR IGNORE INTO settings_connection (

@@ -8,6 +8,7 @@ import ImportConflictModal from "../components/ImportConflictModal";
 import { useErrorToast, useToast } from "../components/ToastProvider";
 import ThemeToggleButton from "../components/ThemeToggleButton";
 import { AppLogEntry, listAppLogs, LogLevel } from "../screen2/api/logs";
+import VirtualDevicesView, { type VirtualDevicesHandle } from "../screen2/pages/VirtualDevicesView";
 import { RiCloseLine } from "react-icons/ri";
 import { useHelp } from "../help/HelpProvider";
 
@@ -30,7 +31,24 @@ export default function WorkspaceScreen({ onOpen }: Props) {
 
   const { pushToast } = useToast();
 
+  // Top-level view: the Workspaces list or the app-global Device Builder
+  // (device templates are shared across all workspaces, so they live outside
+  // any one workspace). Persisted like the grid/list view.
+  const [mainTab, setMainTab] = useState<"workspaces" | "devices">(() => {
+    try {
+      return window.localStorage.getItem("inowio.mainTab") === "devices" ? "devices" : "workspaces";
+    } catch {
+      return "workspaces";
+    }
+  });
+  const switchMainTab = (tab: "workspaces" | "devices") => {
+    setMainTab(tab);
+    try { window.localStorage.setItem("inowio.mainTab", tab); } catch { /* ignore */ }
+  };
+
   const [search, setSearch] = useState("");
+  const [deviceSearch, setDeviceSearch] = useState("");
+  const vdRef = useRef<VirtualDevicesHandle>(null);
   const [view, setView] = useState<"grid" | "list">(() => {
     try {
       return window.localStorage.getItem("inowio.workspace.view") === "list" ? "list" : "grid";
@@ -357,7 +375,7 @@ export default function WorkspaceScreen({ onOpen }: Props) {
             <button
               type="button"
               className="hidden items-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:border-emerald-500/60 hover:text-emerald-700 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:text-emerald-100 sm:inline-flex"
-              onClick={() => openHelp({ section: "overview" })}
+              onClick={() => openHelp({ section: mainTab === "devices" ? "virtual-devices" : "overview" })}
               title="Open help"
             >
               <FiBookOpen className="h-3 w-3" aria-hidden="true" />
@@ -366,7 +384,7 @@ export default function WorkspaceScreen({ onOpen }: Props) {
             <button
               type="button"
               className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-slate-300 bg-slate-100 text-slate-700 transition hover:border-slate-400 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600 sm:hidden"
-              onClick={() => openHelp({ section: "overview" })}
+              onClick={() => openHelp({ section: mainTab === "devices" ? "virtual-devices" : "overview" })}
               aria-label="Open help"
               title="Help"
             >
@@ -377,33 +395,51 @@ export default function WorkspaceScreen({ onOpen }: Props) {
       </header>
       <div className="flex min-h-0 flex-1 flex-col">
         <div className="flex flex-wrap items-center gap-3 border-b border-slate-200 bg-white/60 px-4 py-3 dark:border-slate-800 dark:bg-slate-900/40">
-          <div className="text-xs font-semibold uppercase tracking-[0.25em] text-emerald-700 dark:text-emerald-300">
-            Workspaces
-            <span className="ml-2 font-mono text-sm tracking-normal text-slate-700 dark:text-slate-200">{workspaces.length}</span>
+          <div role="tablist" aria-label="Main sections" className="inline-flex items-center rounded-full border border-slate-300 bg-slate-100 p-0.5 text-xs font-semibold uppercase tracking-[0.15em] dark:border-slate-700 dark:bg-white/5">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mainTab === "workspaces"}
+              onClick={() => switchMainTab("workspaces")}
+              className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 transition ${mainTab === "workspaces" ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-200" : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"}`}
+            >
+              Workspaces
+              <span className="font-mono text-[11px] tracking-normal">{workspaces.length}</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mainTab === "devices"}
+              onClick={() => switchMainTab("devices")}
+              className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 transition ${mainTab === "devices" ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-200" : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"}`}
+            >
+              Virtual Devices
+            </button>
           </div>
 
-          <div className="relative min-w-45 flex-1 sm:max-w-md">
+          <div className="relative min-w-45 flex-1">
             <FiSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500" aria-hidden="true" />
             <input
               id="ws-search"
               ref={searchInputRef}
-              aria-label="Search workspaces"
+              aria-label={mainTab === "workspaces" ? "Search workspaces" : "Search virtual devices"}
               className="w-full rounded-full border border-slate-300 bg-white py-2 pl-9 pr-8 text-sm text-slate-900 outline-hidden placeholder:text-slate-400 focus:border-emerald-600/60 focus:ring-2 focus:ring-emerald-500/10 dark:border-slate-700 dark:bg-slate-950/40 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-emerald-500/60"
-              value={search}
-              onChange={(e) => setSearch(e.currentTarget.value)}
+              value={mainTab === "workspaces" ? search : deviceSearch}
+              onChange={(e) => (mainTab === "workspaces" ? setSearch : setDeviceSearch)(e.currentTarget.value)}
               onKeyDown={(e) => {
                 if (e.key !== "Escape") return;
-                if (!search) return;
+                const cur = mainTab === "workspaces" ? search : deviceSearch;
+                if (!cur) return;
                 e.preventDefault();
-                setSearch("");
+                (mainTab === "workspaces" ? setSearch : setDeviceSearch)("");
               }}
-              placeholder="Search workspaces"
+              placeholder={mainTab === "workspaces" ? "Search workspaces" : "Search virtual devices"}
             />
-            {search ? (
+            {(mainTab === "workspaces" ? search : deviceSearch) ? (
               <button
                 type="button"
                 onClick={() => {
-                  setSearch("");
+                  (mainTab === "workspaces" ? setSearch : setDeviceSearch)("");
                   searchInputRef.current?.focus();
                 }}
                 className="absolute inset-y-0 right-2 flex items-center text-xs text-slate-500 transition hover:text-slate-700 dark:hover:text-slate-300"
@@ -414,7 +450,8 @@ export default function WorkspaceScreen({ onOpen }: Props) {
             ) : null}
           </div>
 
-          <div className="ml-auto flex items-center gap-2">
+          {mainTab === "workspaces" ? (
+          <div className="flex items-center gap-2">
             <div className="inline-flex items-center rounded-full border border-slate-300 bg-slate-100 p-0.5 dark:border-slate-700 dark:bg-white/5">
               <button
                 type="button"
@@ -470,6 +507,28 @@ export default function WorkspaceScreen({ onOpen }: Props) {
               <FiRefreshCcw className="h-4 w-4" aria-hidden="true" />
             </button>
           </div>
+          ) : (
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => vdRef.current?.importDevice()}
+              className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-3.5 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-400 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
+              title="Import a shared virtual device (.json)"
+            >
+              <FiDownload className="h-4 w-4" aria-hidden="true" />
+              Import Device
+            </button>
+            <button
+              type="button"
+              onClick={() => vdRef.current?.openNew()}
+              className="inline-flex items-center gap-2 rounded-full border border-emerald-600/60 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-800 transition hover:border-emerald-500 hover:text-emerald-900 dark:border-emerald-500/60 dark:text-emerald-200 dark:hover:border-emerald-400 dark:hover:text-emerald-100"
+              title="Create a new virtual device"
+            >
+              <FiPlus className="h-4 w-4" aria-hidden="true" />
+              New Device
+            </button>
+          </div>
+          )}
         </div>
 
         {error ? (
@@ -479,6 +538,10 @@ export default function WorkspaceScreen({ onOpen }: Props) {
         ) : null}
 
         <div className="min-h-0 flex-1 overflow-y-auto p-4">
+                {mainTab === "devices" ? (
+                  <VirtualDevicesView ref={vdRef} search={deviceSearch} />
+                ) : (
+                <>
                 {loading ? <div className="flex items-center gap-2 p-2 text-sm text-slate-600 dark:text-slate-300 animate-pulse">
                   <FiRefreshCcw className="h-4 w-4 animate-spin" aria-hidden="true" />
                   Loading...
@@ -725,6 +788,8 @@ export default function WorkspaceScreen({ onOpen }: Props) {
                     </table>
                   </div>
                 ) : null}
+                </>
+                )}
         </div>
       </div>
 

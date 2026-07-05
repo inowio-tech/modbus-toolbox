@@ -5,6 +5,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import Screen2Layout from "./screen2/Screen2Layout";
 import AboutPage from "./screen2/pages/AboutPage";
 import AnalyzerPage from "./screen2/pages/AnalyzerPage";
+import TcpSimulatorPage from "./screen2/pages/TcpSimulatorPage";
 import ConnectionPage from "./screen2/pages/ConnectionPage";
 import ClientPage from "./screen2/pages/ClientPage";
 import SlaveDetailPage from "./screen2/pages/SlaveDetailPage";
@@ -107,6 +108,7 @@ function App() {
           <Route path="client" element={<ClientPage />} />
           <Route path="slaves" element={<SlavesPage />} />
           <Route path="slaves/:slaveId" element={<SlaveDetailPage />} />
+          <Route path="tcp-simulator" element={<TcpSimulatorPage />} />
           <Route path="about" element={<AboutPage />} />
         </Route>
 

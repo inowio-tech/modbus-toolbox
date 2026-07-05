@@ -58,7 +58,7 @@ const overviewSection: HelpSectionDefinition = {
         title="What Modbus Workbench delivers"
         meta={overviewAnchors[0]}
         actions={
-          <HelpAnchorLink section="workspace" anchor="details">
+          <HelpAnchorLink section="workspace" anchor="overview">
             Jump to workspace setup
           </HelpAnchorLink>
         }
@@ -72,6 +72,14 @@ const overviewSection: HelpSectionDefinition = {
           <li>Visual interface for device interaction without writing test harnesses.</li>
           <li>Central register catalog reused across connections, slaves, and analyzer tiles.</li>
           <li>Real-time polling with decoded + raw values to validate scaling and byte order.</li>
+          <li>
+            A built-in <HelpAnchorLink section="simulator" anchor="overview" variant="link">TCP Simulator</HelpAnchorLink> (server mode) that answers external
+            masters from fixed, generated, or slave-routed values—no hardware needed.
+          </li>
+          <li>
+            Reusable, shareable <HelpAnchorLink section="virtual-devices" anchor="overview" variant="link">Virtual Devices</HelpAnchorLink>—build a device
+            once and drop it into any workspace's simulator, or export it as a JSON file.
+          </li>
           <li>Structured logging for exportable diagnostics when something misbehaves.</li>
         </ul>
         <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-800/60 dark:bg-slate-900/30">
@@ -90,14 +98,14 @@ const overviewSection: HelpSectionDefinition = {
         title="Core application workflow"
         meta={overviewAnchors[1]}
         actions={
-          <HelpAnchorLink section="logs" anchor="workspace" variant="link">
+          <HelpAnchorLink section="logs" anchor="types" variant="link">
             Review workspace logs
           </HelpAnchorLink>
         }
       >
         <p>The app walks you through a linear-but-repeatable journey:</p>
-        <div className="grid gap-3 md:grid-cols-5">
-          {["Workspace", "Connection", "Slaves", "Analyzer", "Logs"].map((phase, index) => (
+        <div className="grid gap-3 md:grid-cols-3">
+          {["Workspace", "Connection", "Slaves", "Analyzer", "TCP Simulator", "Logs"].map((phase, index) => (
             <div
               key={phase}
               className="rounded-xl border border-slate-200 bg-white p-3 text-center text-sm text-slate-700 shadow-sm shadow-black/5 dark:border-slate-800/60 dark:bg-slate-900/20 dark:text-slate-200 dark:shadow-black/0"
@@ -165,8 +173,17 @@ registers:
               <li>Example: track pressure (40001) and flow (40003) every 2 s.</li>
             </ul>
           </div>
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm shadow-black/5 md:col-span-2 dark:border-slate-800/60 dark:bg-slate-900/20 dark:shadow-black/0">
-            <h3 className="text-base font-semibold text-slate-900 dark:text-white">5. Logs</h3>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm shadow-black/5 dark:border-slate-800/60 dark:bg-slate-900/20 dark:shadow-black/0">
+            <h3 className="text-base font-semibold text-slate-900 dark:text-white">5. TCP Simulator &amp; Virtual Devices</h3>
+            <p>Turn the workbench into a Modbus TCP server that answers external masters—no hardware needed.</p>
+            <ul className="mt-2 list-disc space-y-1 pl-5">
+              <li>Serve fixed, generated, or slave-routed values across all four register banks.</li>
+              <li>Instantiate reusable <strong>Virtual Devices</strong> (built-in or your own) at any Unit ID.</li>
+              <li>See <HelpAnchorLink section="simulator" anchor="overview" variant="link">TCP Simulator</HelpAnchorLink> and <HelpAnchorLink section="virtual-devices" anchor="overview" variant="link">Virtual Devices</HelpAnchorLink>.</li>
+            </ul>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm shadow-black/5 dark:border-slate-800/60 dark:bg-slate-900/20 dark:shadow-black/0">
+            <h3 className="text-base font-semibold text-slate-900 dark:text-white">6. Logs</h3>
             <p>Chronological trace of every Modbus exchange for diagnostics and audits.</p>
             <ul className="mt-2 list-disc space-y-1 pl-5">
               <li>Includes timestamps, function codes, responses, and decoded human values.</li>
@@ -237,7 +254,7 @@ registers:
         title="Troubleshooting quick reference"
         meta={overviewAnchors[5]}
         actions={
-          <HelpAnchorLink section="logs" anchor="analysis">
+          <HelpAnchorLink section="logs" anchor="examples">
             Dive into log analysis
           </HelpAnchorLink>
         }

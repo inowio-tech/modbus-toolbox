@@ -12,18 +12,22 @@ Desktop toolkit for configuring, testing, and monitoring Modbus TCP/RTU devices.
 
 | | |
 | --- | --- |
-| ![Inowio Modbus Workbench screenshot 1](public/screenshots/modbus-workbench-1.jpg) | ![Inowio Modbus Workbench screenshot 2](public/screenshots/modbus-workbench-2.jpg) |
-| ![Inowio Modbus Workbench screenshot 3](public/screenshots/modbus-workbench-3.jpg) | ![Inowio Modbus Workbench screenshot 4](public/screenshots/modbus-workbench-4.jpg) |
-| ![Inowio Modbus Workbench screenshot 5](public/screenshots/modbus-workbench-5.jpg) | ![Inowio Modbus Workbench screenshot 6](public/screenshots/modbus-workbench-6.jpg) |
-| ![Inowio Modbus Workbench screenshot 7](public/screenshots/modbus-workbench-7.jpg) | ![Inowio Modbus Workbench screenshot 8](public/screenshots/modbus-workbench-8.jpg) |
-| ![Inowio Modbus Workbench screenshot 9](public/screenshots/modbus-workbench-9.jpg) | ![Inowio Modbus Workbench screenshot 10](public/screenshots/modbus-workbench-10.jpg) |
-| ![Inowio Modbus Workbench screenshot 11](public/screenshots/modbus-workbench-11.jpg) | |
+| ![Workspaces browser — grid of Modbus workspaces](public/screenshots/modbus-workbench-1.jpg) | ![Virtual Devices — reusable device blueprints shared across workspaces](public/screenshots/modbus-workbench-2.jpg) |
+| ![Workspace information page](public/screenshots/modbus-workbench-3.jpg) | ![Connection settings — Serial (RTU)](public/screenshots/modbus-workbench-4.jpg) |
+| ![Connection settings — Modbus TCP](public/screenshots/modbus-workbench-5.jpg) | ![Slaves list for a workspace](public/screenshots/modbus-workbench-6.jpg) |
+| ![Slave detail — register map, polling, and attachments](public/screenshots/modbus-workbench-7.jpg) | ![Traffic Monitor — live Modbus request/response frames](public/screenshots/modbus-workbench-8.jpg) |
+| ![Analyzer — signal decoder configuration](public/screenshots/modbus-workbench-9.jpg) | ![Analyzer — live value tiles and trend charts](public/screenshots/modbus-workbench-10.jpg) |
+| ![TCP Simulator — devices, with a real slave exposed as a routed device](public/screenshots/modbus-workbench-11.jpg) | ![TCP Simulator — register map routed from a live slave](public/screenshots/modbus-workbench-12.jpg) |
+| ![TCP Simulator — automation rule editor](public/screenshots/modbus-workbench-13.jpg) | ![TCP Simulator — automation rules list](public/screenshots/modbus-workbench-14.jpg) |
+| ![About page](public/screenshots/modbus-workbench-about.jpg) | ![Workspace settings — logging, timing, and retry](public/screenshots/modbus-workbench-settings.jpg) |
 
 ## Highlights
 
 - Multi-protocol Modbus (TCP & RTU) with persistent workspace settings
 - Device registry with register mapping, bulk import/export, and diagnostics
 - Live register **Monitor** view with density, search, status filters, and pinned watch-lists for large maps
+- **TCP Simulator (server mode)** — run a Modbus TCP server that answers external masters (SCADA/PLCs/test tools) across all four register banks (Coils, Discrete Inputs, Holding, Input) and multiple Unit IDs. Values can be fixed, generated (sine/ramp/decrement/step/random/toggle), or **routed from a real slave** (turning the app into a Modbus gateway with scale/offset). Tabbed workspace (Registers, Devices, Rules, Live Values, Activity), automation rules (trigger → action with delays), a clients/events Activity view, and workspace **Profile export/import**
+- **Virtual Devices** — build a device's register map once and reuse it in any workspace's simulator via *Add Device*. A built-in catalog plus fully editable custom devices, a searchable icon picker, form-or-JSON parameters, **save-as** from a live device, one-click **expose a real slave as a routed device**, and **export/import as JSON** for community sharing
 - Real-time analyzer powered by ECharts plus traffic capture for debugging
 - Grid/list workspace browser that remembers your view, and per-slave register-type recall
 - Rich logging, dark/light theming, and keyboard-friendly UI

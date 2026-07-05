@@ -1,0 +1,68 @@
+import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import AddDeviceModal from "./AddDeviceModal";
+
+const T = [{ templateKey: "temp_humidity", name: "Temp/Humidity", category: "Sensors", description: "d", icon: "🌡️",
+  registers: [{ offset: 0, bank: 4, dataType: "u16", byteOrder: "ABCD", valueSource: "device", sourceParams: "{}", alias: "Temperature" }] }];
+
+describe("AddDeviceModal", () => {
+  it("selects a template, configures it, and submits directly from configure", () => {
+    const onSubmit = vi.fn();
+    render(<AddDeviceModal open templates={T} onClose={() => {}} onSubmit={onSubmit} />);
+    fireEvent.click(screen.getByRole("button", { name: /temp\/humidity/i }));
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    fireEvent.change(screen.getByLabelText(/device name/i), { target: { value: "Sensor A" } });
+    fireEvent.click(screen.getByRole("button", { name: /create/i }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ templateKey: "temp_humidity", deviceName: "Sensor A" }));
+  });
+  it("does not render when closed", () => {
+    const { container } = render(<AddDeviceModal open={false} templates={[]} onClose={() => {}} onSubmit={() => {}} />);
+    expect(container.firstChild).toBeNull();
+  });
+});
+
+describe("AddDeviceModal wizard", () => {
+  it("walks select → configure → create", () => {
+    const onSubmit = vi.fn();
+    render(<AddDeviceModal open templates={T} onClose={vi.fn()} onSubmit={onSubmit} />);
+    fireEvent.click(screen.getByText("Temp/Humidity"));           // select template
+    fireEvent.click(screen.getByRole("button", { name: /next/i })); // → configure
+    fireEvent.change(screen.getByLabelText(/base address/i), { target: { value: "40001" } });
+    fireEvent.click(screen.getByRole("button", { name: /create/i }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ templateKey: "temp_humidity", baseAddress: 40001 }));
+  });
+  it("blocks Next until a template is selected", () => {
+    render(<AddDeviceModal open templates={T} onClose={vi.fn()} onSubmit={vi.fn()} />);
+    expect(screen.getByRole("button", { name: /next/i })).toBeDisabled();
+  });
+  it("prefills the device name from the template", () => {
+    render(<AddDeviceModal open templates={T} onClose={vi.fn()} onSubmit={vi.fn()} />);
+    fireEvent.click(screen.getByText("Temp/Humidity"));
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    expect((screen.getByLabelText(/device name/i) as HTMLInputElement).value).toBe("Temp/Humidity");
+  });
+  it("blocks Create in configure when the name is cleared", () => {
+    render(<AddDeviceModal open templates={T} onClose={vi.fn()} onSubmit={vi.fn()} />);
+    fireEvent.click(screen.getByText("Temp/Humidity"));
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    fireEvent.change(screen.getByLabelText(/device name/i), { target: { value: "" } });
+    expect(screen.getByRole("button", { name: /create/i })).toBeDisabled();
+    expect(screen.getByText(/device name is required/i)).toBeInTheDocument();
+  });
+
+  it("lists a workspace-slave device under its own category and submits its key", () => {
+    const slaveTpl = {
+      templateKey: "ws-slave:7", name: "SHT20", category: "Workspace",
+      description: "Routes to serial unit 3 · 2 registers", icon: "🔗",
+      registers: [{ offset: 1, bank: 4, dataType: "u16", byteOrder: "ABCD", valueSource: "route",
+        sourceParams: '{"slaveUnitId":3,"connectionKind":"serial","functionCode":4,"address":1,"scale":1,"offset":0}', alias: "Temperature" }],
+    };
+    const onSubmit = vi.fn();
+    render(<AddDeviceModal open templates={[...T, slaveTpl]} onClose={vi.fn()} onSubmit={onSubmit} />);
+    fireEvent.click(screen.getByRole("button", { name: "Workspace" })); // category filter
+    fireEvent.click(screen.getByText("SHT20"));
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    fireEvent.click(screen.getByRole("button", { name: /create/i }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ templateKey: "ws-slave:7", deviceName: "SHT20" }));
+  });
+});

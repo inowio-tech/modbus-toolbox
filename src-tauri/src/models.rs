@@ -306,3 +306,80 @@ pub struct AnalyzerSignalUpsert {
     #[serde(default)]
     pub decoder_json: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SimConfig {
+    pub enabled: bool,
+    pub host: String,
+    pub port: i64,
+    pub tick_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SimRegister {
+    #[serde(default)]
+    pub id: i64,
+    pub unit_id: i64,
+    pub function_code: i64,
+    pub address: i64,
+    #[serde(default)]
+    pub alias: String,
+    #[serde(default = "default_u16_type")]
+    pub data_type: String,
+    #[serde(default)]
+    pub hold_value: i64,
+    #[serde(default)]
+    pub sort_order: i64,
+    #[serde(default)]
+    pub device_instance_id: Option<i64>,
+    #[serde(default = "default_value_source")]
+    pub value_source: String,
+    #[serde(default = "default_order")]
+    pub byte_order: String,
+    #[serde(default = "default_source_params")]
+    pub source_params: String,
+    #[serde(default = "default_interval_ms")]
+    pub interval_ms: i64,
+    #[serde(default)]
+    pub unit: Option<String>,
+    #[serde(default)]
+    pub display_format: Option<String>,
+}
+
+fn default_u16_type() -> String { "u16".to_string() }
+fn default_value_source() -> String { "hold".to_string() }
+fn default_order() -> String { "ABCD".to_string() }
+fn default_source_params() -> String { "{}".to_string() }
+fn default_interval_ms() -> i64 { 1000 }
+fn default_true() -> bool { true }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SimRule {
+    #[serde(default)]
+    pub id: i64,
+    pub name: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    pub trigger: String,      // JSON object
+    pub actions: String,      // JSON array
+    #[serde(default)]
+    pub sort_order: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SimDevice {
+    #[serde(default)]
+    pub id: i64,
+    #[serde(default)]
+    pub template_key: String,
+    pub name: String,
+    pub unit_id: i64,
+    #[serde(default)]
+    pub base_address: i64,
+    #[serde(default)]
+    pub sort_order: i64,
+}
