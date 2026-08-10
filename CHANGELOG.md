@@ -3,6 +3,10 @@
 All notable changes to this project are tracked here following [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+_No changes yet._
+
+## [0.5.0] - 2026-08-10
 ### Added
 - **Clone a slave** — duplicate any slave from the Slaves list, including its
   full register map across every function code (alias, address, data type, byte
