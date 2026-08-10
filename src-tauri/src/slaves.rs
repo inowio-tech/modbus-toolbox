@@ -7,31 +7,42 @@ fn is_foreign_key_constraint_error(msg: &str) -> bool {
     msg.to_lowercase().contains("foreign key constraint failed")
 }
 
+const SLAVE_COLUMNS: &str =
+    "id, name, unit_id, poll_interval_ms, connection_kind, address_offset, created_at, updated_at";
+
+fn map_slave_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SlaveItem> {
+    Ok(SlaveItem {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        unit_id: row.get(2)?,
+        poll_interval_ms: row.get(3)?,
+        connection_kind: row.get(4)?,
+        address_offset: row.get(5).unwrap_or(0),
+        created_at: row.get(6)?,
+        updated_at: row.get(7)?,
+    })
+}
+
+fn fetch_slave(conn: &rusqlite::Connection, id: i64) -> rusqlite::Result<SlaveItem> {
+    conn.query_row(
+        &format!("SELECT {SLAVE_COLUMNS} FROM slaves WHERE id = ?1;"),
+        (id,),
+        map_slave_row,
+    )
+}
+
 #[tauri::command]
 pub fn list_slaves(app: tauri::AppHandle, name: String) -> Result<Vec<SlaveItem>, String> {
     let conn = open_workspace_db(&app, &name)?;
 
     let mut stmt = conn
-        .prepare(
-            "SELECT id, name, unit_id, poll_interval_ms, connection_kind, address_offset, created_at, updated_at
-             FROM slaves
-             ORDER BY unit_id ASC;",
-        )
+        .prepare(&format!(
+            "SELECT {SLAVE_COLUMNS} FROM slaves ORDER BY unit_id ASC;"
+        ))
         .map_err(|e| format!("failed to prepare query: {e}"))?;
 
     let rows = stmt
-        .query_map([], |row| {
-            Ok(SlaveItem {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                unit_id: row.get(2)?,
-                poll_interval_ms: row.get(3)?,
-                connection_kind: row.get(4)?,
-                address_offset: row.get(5).unwrap_or(0),
-                created_at: row.get(6)?,
-                updated_at: row.get(7)?,
-            })
-        })
+        .query_map([], map_slave_row)
         .map_err(|e| format!("failed to query slaves: {e}"))?;
 
     let mut out: Vec<SlaveItem> = Vec::new();
@@ -71,23 +82,7 @@ pub fn create_slave(
 
     let id = conn.last_insert_rowid();
 
-    conn.query_row(
-        "SELECT id, name, unit_id, poll_interval_ms, connection_kind, address_offset, created_at, updated_at FROM slaves WHERE id = ?1;",
-        (id,),
-        |row| {
-            Ok(SlaveItem {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                unit_id: row.get(2)?,
-                poll_interval_ms: row.get(3)?,
-                connection_kind: row.get(4)?,
-                address_offset: row.get(5).unwrap_or(0),
-                created_at: row.get(6)?,
-                updated_at: row.get(7)?,
-            })
-        },
-    )
-    .map_err(|e| format!("failed to read created slave: {e}"))
+    fetch_slave(&conn, id).map_err(|e| format!("failed to read created slave: {e}"))
 }
 
 #[tauri::command]
@@ -100,24 +95,8 @@ pub fn update_slave(
 ) -> Result<SlaveItem, String> {
     let conn = open_workspace_db(&app, &name)?;
 
-    let existing: SlaveItem = conn
-        .query_row(
-            "SELECT id, name, unit_id, poll_interval_ms, connection_kind, address_offset, created_at, updated_at FROM slaves WHERE id = ?1;",
-            (id,),
-            |row| {
-                Ok(SlaveItem {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    unit_id: row.get(2)?,
-                    poll_interval_ms: row.get(3)?,
-                    connection_kind: row.get(4)?,
-                    address_offset: row.get(5).unwrap_or(0),
-                    created_at: row.get(6)?,
-                    updated_at: row.get(7)?,
-                })
-            },
-        )
-        .map_err(|e| format!("slave not found: {e}"))?;
+    let existing: SlaveItem =
+        fetch_slave(&conn, id).map_err(|e| format!("slave not found: {e}"))?;
 
     let merged_name = patch.name.unwrap_or(Some(existing.name));
     let merged_unit_id = patch.unit_id.unwrap_or(Some(existing.unit_id));
@@ -156,23 +135,7 @@ pub fn update_slave(
     )
     .map_err(|e| format!("failed to update slave: {e}"))?;
 
-    conn.query_row(
-        "SELECT id, name, unit_id, poll_interval_ms, connection_kind, address_offset, created_at, updated_at FROM slaves WHERE id = ?1;",
-        (id,),
-        |row| {
-            Ok(SlaveItem {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                unit_id: row.get(2)?,
-                poll_interval_ms: row.get(3)?,
-                connection_kind: row.get(4)?,
-                address_offset: row.get(5).unwrap_or(0),
-                created_at: row.get(6)?,
-                updated_at: row.get(7)?,
-            })
-        },
-    )
-    .map_err(|e| format!("failed to read updated slave: {e}"))
+    fetch_slave(&conn, id).map_err(|e| format!("failed to read updated slave: {e}"))
 }
 
 #[tauri::command]
@@ -398,4 +361,293 @@ pub fn count_slave_register_rows(
     Ok(out)
 }
 
+pub(crate) fn clone_slave_in_conn(
+    conn: &mut rusqlite::Connection,
+    source_id: i64,
+    new_name: &str,
+    new_unit_id: i64,
+    now_iso: &str,
+) -> Result<SlaveItem, String> {
+    let trimmed = new_name.trim();
+    if trimmed.is_empty() {
+        return Err("slave name is required".to_string());
+    }
+    if new_unit_id <= 0 {
+        return Err("slave unitId must be a positive number".to_string());
+    }
 
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("failed to start transaction: {e}"))?;
+
+    let source = fetch_slave(&tx, source_id).map_err(|e| format!("slave not found: {e}"))?;
+
+    tx.execute(
+        "INSERT INTO slaves (name, unit_id, poll_interval_ms, connection_kind, address_offset, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7);",
+        (
+            trimmed,
+            new_unit_id,
+            source.poll_interval_ms,
+            source.connection_kind.as_str(),
+            source.address_offset,
+            now_iso,
+            now_iso,
+        ),
+    )
+    .map_err(|e| format!("failed to create slave: {e}"))?;
+
+    let new_id = tx.last_insert_rowid();
+
+    tx.execute(
+        "INSERT INTO slave_register_rows
+            (slave_id, function_code, address, alias, data_type, \"order\", display_format, write_value, updated_at)
+         SELECT ?1, function_code, address, alias, data_type, \"order\", display_format, write_value, ?2
+         FROM slave_register_rows
+         WHERE slave_id = ?3;",
+        (new_id, now_iso, source_id),
+    )
+    .map_err(|e| format!("failed to copy register rows: {e}"))?;
+
+    let created =
+        fetch_slave(&tx, new_id).map_err(|e| format!("failed to read created slave: {e}"))?;
+
+    tx.commit()
+        .map_err(|e| format!("failed to commit transaction: {e}"))?;
+
+    Ok(created)
+}
+
+#[tauri::command]
+pub fn clone_slave(
+    app: tauri::AppHandle,
+    name: String,
+    id: i64,
+    new_name: String,
+    new_unit_id: i64,
+    now_iso: String,
+) -> Result<SlaveItem, String> {
+    let mut conn = open_workspace_db(&app, &name)?;
+    clone_slave_in_conn(&mut conn, id, &new_name, new_unit_id, &now_iso)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::ensure_workspace_db;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    const NOW: &str = "2026-08-04T10:00:00Z";
+
+    fn temp_db() -> (PathBuf, rusqlite::Connection) {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("slaves_clone_test_{nanos}"));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        ensure_workspace_db(&dir, "workspace.db").expect("schema");
+        let conn = rusqlite::Connection::open(dir.join("workspace.db")).expect("open db");
+        conn.execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("pragma");
+        (dir, conn)
+    }
+
+    fn cleanup(dir: PathBuf, conn: rusqlite::Connection) {
+        drop(conn);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn seed_slave(
+        conn: &rusqlite::Connection,
+        name: &str,
+        unit_id: i64,
+        poll_interval_ms: i64,
+        connection_kind: &str,
+        address_offset: i64,
+    ) -> i64 {
+        conn.execute(
+            "INSERT INTO slaves (name, unit_id, poll_interval_ms, connection_kind, address_offset, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');",
+            (name, unit_id, poll_interval_ms, connection_kind, address_offset),
+        )
+        .expect("insert slave");
+        conn.last_insert_rowid()
+    }
+
+    fn seed_row(conn: &rusqlite::Connection, slave_id: i64, function_code: i64, address: i64, alias: &str) {
+        conn.execute(
+            "INSERT INTO slave_register_rows
+                (slave_id, function_code, address, alias, data_type, \"order\", display_format, write_value, updated_at)
+             VALUES (?1, ?2, ?3, ?4, 'u16', 'BADC', 'hex', 7, '2026-01-01T00:00:00Z');",
+            (slave_id, function_code, address, alias),
+        )
+        .expect("insert register row");
+    }
+
+    fn count_rows(conn: &rusqlite::Connection, slave_id: i64) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM slave_register_rows WHERE slave_id = ?1;",
+            (slave_id,),
+            |r| r.get(0),
+        )
+        .expect("count rows")
+    }
+
+    fn count_slaves(conn: &rusqlite::Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM slaves;", (), |r| r.get(0))
+            .expect("count slaves")
+    }
+
+    #[test]
+    fn clone_copies_register_rows_across_function_codes() {
+        let (dir, mut conn) = temp_db();
+        let source = seed_slave(&conn, "SHT20", 3, 1000, "serial", 0);
+        seed_row(&conn, source, 3, 0x0101, "temperature");
+        seed_row(&conn, source, 3, 0x0102, "humidity");
+        seed_row(&conn, source, 4, 0, "status");
+        seed_row(&conn, source, 1, 5, "relay");
+
+        let cloned = clone_slave_in_conn(&mut conn, source, "SHT20 (copy)", 4, NOW).expect("clone");
+
+        assert_eq!(count_rows(&conn, cloned.id), 4);
+        let (fc, address, alias, data_type, order, display_format, write_value, updated_at): (
+            i64,
+            i64,
+            String,
+            String,
+            String,
+            String,
+            Option<i64>,
+            String,
+        ) = conn
+            .query_row(
+                "SELECT function_code, address, alias, data_type, \"order\", display_format, write_value, updated_at
+                 FROM slave_register_rows WHERE slave_id = ?1 AND function_code = 3 AND address = 258;",
+                (cloned.id,),
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                        r.get(7)?,
+                    ))
+                },
+            )
+            .expect("cloned row");
+        assert_eq!(fc, 3);
+        assert_eq!(address, 0x0102);
+        assert_eq!(alias, "humidity");
+        assert_eq!(data_type, "u16");
+        assert_eq!(order, "BADC");
+        assert_eq!(display_format, "hex");
+        assert_eq!(write_value, Some(7));
+        assert_eq!(updated_at, NOW, "copied row must carry the clone timestamp, not the source's");
+        cleanup(dir, conn);
+    }
+
+    #[test]
+    fn clone_copies_slave_settings_but_takes_new_identity() {
+        let (dir, mut conn) = temp_db();
+        let source = seed_slave(&conn, "Meter", 9, 2500, "tcp", 40001);
+
+        let cloned = clone_slave_in_conn(&mut conn, source, "  Meter (copy)  ", 10, NOW).expect("clone");
+
+        assert_ne!(cloned.id, source);
+        assert_eq!(cloned.name, "Meter (copy)", "name is trimmed");
+        assert_eq!(cloned.unit_id, 10);
+        assert_eq!(cloned.poll_interval_ms, 2500);
+        assert_eq!(cloned.connection_kind, "tcp");
+        assert_eq!(cloned.address_offset, 40001);
+        assert_eq!(cloned.created_at, NOW);
+        assert_eq!(cloned.updated_at, NOW);
+        cleanup(dir, conn);
+    }
+
+    #[test]
+    fn clone_leaves_the_source_untouched() {
+        let (dir, mut conn) = temp_db();
+        let source = seed_slave(&conn, "Pump", 1, 1000, "serial", 0);
+        seed_row(&conn, source, 3, 10, "speed");
+
+        clone_slave_in_conn(&mut conn, source, "Pump (copy)", 2, NOW).expect("clone");
+
+        let original = fetch_slave(&conn, source).expect("source still there");
+        assert_eq!(original.name, "Pump");
+        assert_eq!(original.unit_id, 1);
+        assert_eq!(original.updated_at, "2026-01-01T00:00:00Z");
+        assert_eq!(count_rows(&conn, source), 1);
+        cleanup(dir, conn);
+    }
+
+    #[test]
+    fn clone_of_unknown_source_creates_nothing() {
+        let (dir, mut conn) = temp_db();
+        seed_slave(&conn, "Pump", 1, 1000, "serial", 0);
+
+        let err = clone_slave_in_conn(&mut conn, 4242, "Ghost", 2, NOW).expect_err("must fail");
+
+        assert!(err.contains("slave not found"), "unexpected error: {err}");
+        assert_eq!(count_slaves(&conn), 1, "no partial slave left behind");
+        cleanup(dir, conn);
+    }
+
+    #[test]
+    fn clone_rejects_blank_name_and_non_positive_unit_id() {
+        let (dir, mut conn) = temp_db();
+        let source = seed_slave(&conn, "Pump", 1, 1000, "serial", 0);
+
+        let blank = clone_slave_in_conn(&mut conn, source, "   ", 2, NOW).expect_err("blank name");
+        assert!(blank.contains("name is required"), "unexpected error: {blank}");
+
+        let bad_unit = clone_slave_in_conn(&mut conn, source, "Pump (copy)", 0, NOW)
+            .expect_err("bad unit id");
+        assert!(bad_unit.contains("positive"), "unexpected error: {bad_unit}");
+
+        let negative_unit = clone_slave_in_conn(&mut conn, source, "Pump (copy)", -1, NOW)
+            .expect_err("negative unit id");
+        assert!(
+            negative_unit.contains("positive"),
+            "unexpected error: {negative_unit}"
+        );
+
+        assert_eq!(count_slaves(&conn), 1);
+        cleanup(dir, conn);
+    }
+
+    #[test]
+    fn clone_rolls_back_the_new_slave_when_copying_rows_fails() {
+        let (dir, mut conn) = temp_db();
+        let source = seed_slave(&conn, "Pump", 1, 1000, "serial", 0);
+        seed_row(&conn, source, 3, 10, "speed");
+        conn.execute_batch(
+            "CREATE TEMP TRIGGER block_copy BEFORE INSERT ON slave_register_rows
+             BEGIN SELECT RAISE(ABORT, 'boom'); END;",
+        )
+        .expect("temp trigger");
+
+        let err = clone_slave_in_conn(&mut conn, source, "Pump (copy)", 2, NOW)
+            .expect_err("row copy must fail");
+
+        assert!(err.contains("failed to copy register rows"), "unexpected error: {err}");
+        assert_eq!(count_slaves(&conn), 1, "the slave insert must roll back");
+        cleanup(dir, conn);
+    }
+
+    #[test]
+    fn clone_of_a_slave_without_registers_succeeds() {
+        let (dir, mut conn) = temp_db();
+        let source = seed_slave(&conn, "Empty", 5, 1000, "serial", 0);
+
+        let cloned = clone_slave_in_conn(&mut conn, source, "Empty (copy)", 6, NOW).expect("clone");
+
+        assert_eq!(count_rows(&conn, cloned.id), 0);
+        assert_eq!(count_slaves(&conn), 2);
+        cleanup(dir, conn);
+    }
+}

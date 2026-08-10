@@ -38,8 +38,8 @@ use settings::{
 };
 
 use slaves::{
-    count_slave_register_rows, create_slave, delete_slave, list_slave_register_rows, list_slaves,
-    save_slave_register_rows, update_slave,
+    clone_slave, count_slave_register_rows, create_slave, delete_slave, list_slave_register_rows,
+    list_slaves, save_slave_register_rows, update_slave,
 };
 
 use workspace::{
@@ -190,6 +190,7 @@ pub fn run() {
             create_slave,
             update_slave,
             delete_slave,
+            clone_slave,
             list_slave_register_rows,
             count_slave_register_rows,
             save_slave_register_rows,

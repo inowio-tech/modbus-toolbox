@@ -167,4 +167,101 @@ describe("SlavesPage", () => {
     await screen.findByText(/Idle/);
     expect(await screen.findByText(/no registers configured/i)).toBeInTheDocument();
   });
+
+  it("opens the clone dialog pre-filled with a free name and unit id", async () => {
+    setupList([
+      { id: 1, name: "SHT20", unitId: 1, createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z" },
+      { id: 2, name: "Pump", unitId: 2, createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z" },
+    ]);
+
+    render(<SlavesPage />);
+
+    const sht = await screen.findByText(/SHT20/);
+    const row = sht.closest("li");
+    expect(row).not.toBeNull();
+    fireEvent.click(within(row as HTMLLIElement).getByRole("button", { name: /clone/i }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByLabelText(/name/i)).toHaveValue("SHT20 (copy)");
+    // 1 and 2 are taken, so the first free unit id is 3.
+    expect(within(dialog).getByLabelText(/unit id/i)).toHaveValue(3);
+  });
+
+  it("clones a slave through the backend and reports success", async () => {
+    invokeMock.mockImplementation((command: string, args?: Record<string, unknown>) => {
+      if (command === "list_slaves") {
+        return Promise.resolve([
+          { id: 1, name: "SHT20", unitId: 1, createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z" },
+        ]);
+      }
+      if (command === "clone_slave") {
+        return Promise.resolve({
+          id: 2,
+          name: args?.newName,
+          unitId: args?.newUnitId,
+          createdAt: "2024-02-02T00:00:00Z",
+          updatedAt: "2024-02-02T00:00:00Z",
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    render(<SlavesPage />);
+
+    const sht = await screen.findByText(/SHT20/);
+    fireEvent.click(
+      within(sht.closest("li") as HTMLLIElement).getByRole("button", { name: /clone/i }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: /^clone$/i }));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith(
+        "clone_slave",
+        expect.objectContaining({ id: 1, newName: "SHT20 (copy)", newUnitId: 2 }),
+      ),
+    );
+    await waitFor(() =>
+      expect(pushToastMock).toHaveBeenCalledWith('Slave "SHT20 (copy)" cloned', "info"),
+    );
+    await waitFor(() =>
+      expect(logEventMock).toHaveBeenCalledWith(
+        expect.objectContaining({ message: "Slave cloned" }),
+      ),
+    );
+    expect(invokeMock).not.toHaveBeenCalledWith("update_slave", expect.anything());
+
+    await screen.findByText(/SHT20 \(copy\)/);
+    expect(invokeMock.mock.calls.filter(([c]) => c === "count_slave_register_rows")).toHaveLength(2);
+  });
+
+  it("surfaces clone failures in the dialog", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_slaves") {
+        return Promise.resolve([
+          { id: 1, name: "SHT20", unitId: 1, createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z" },
+        ]);
+      }
+      if (command === "clone_slave") {
+        return Promise.reject(new Error("failed to copy register rows: disk full"));
+      }
+      return Promise.resolve(null);
+    });
+
+    render(<SlavesPage />);
+
+    const sht = await screen.findByText(/SHT20/);
+    fireEvent.click(
+      within(sht.closest("li") as HTMLLIElement).getByRole("button", { name: /clone/i }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: /^clone$/i }));
+
+    await screen.findByText(/failed to copy register rows/i);
+    await waitFor(() =>
+      expect(logEventMock).toHaveBeenCalledWith(
+        expect.objectContaining({ message: "Failed to clone slave" }),
+      ),
+    );
+  });
 });
