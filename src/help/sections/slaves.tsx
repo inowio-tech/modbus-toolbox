@@ -11,6 +11,8 @@ const slavesSection: HelpSectionDefinition = {
     "slaves",
     "registers",
     "unit id",
+    "clone",
+    "duplicate",
     "polling",
     "mask write",
     "scan",
@@ -23,7 +25,8 @@ const slavesSection: HelpSectionDefinition = {
     "status bar",
   ],
   searchText:
-    "Learn how to maintain the slaves list, open slave detail, configure connections, poll intervals, register selector, Edit and Monitor views, live monitor dashboard with density, search, filters and pinning, status bar, toolbar actions, register rows, mask write, row actions, read-after-write, attachments, switching behavior, address format, and safety rules.",
+    "Learn how to maintain the slaves list, open slave detail, configure connections, poll intervals, register selector, Edit and Monitor views, live monitor dashboard with density, search, filters and pinning, status bar, toolbar actions, register rows, mask write, row actions, read-after-write, attachments, switching behavior, address format, and safety rules." +
+    " Clone a slave to duplicate its register map and settings under a new name and Unit ID.",
   anchors: [
     { id: "list-overview", label: "Slaves list overview" },
     { id: "list-layout", label: "List layout" },
@@ -31,7 +34,7 @@ const slavesSection: HelpSectionDefinition = {
     { id: "list-search", label: "Search & filter" },
     { id: "list-rows", label: "Row metadata" },
     { id: "list-actions", label: "Per-slave actions" },
-    { id: "list-dialogs", label: "Add / edit / delete" },
+    { id: "list-dialogs", label: "Add / clone / edit / delete" },
     { id: "list-best", label: "List best practices" },
     { id: "list-scope", label: "List scope" },
     { id: "detail-purpose", label: "Slave detail purpose" },
@@ -96,13 +99,17 @@ const slavesSection: HelpSectionDefinition = {
       <SectionBlock section="slaves" anchor="list-actions" title="Per-slave actions">
         <ul className="list-disc space-y-1 pl-5">
           <li><strong>Open</strong> — jump into the Slave Detail workspace to configure registers, poll, or write.</li>
+          <li><strong>Clone</strong> — duplicate the slave with its full register map. Handy when several identical devices sit on the same bus.</li>
           <li><strong>Edit</strong> — rename or adjust Unit ID (duplicates allowed for different connection types).</li>
           <li><strong>Delete</strong> — remove the definition (never touches hardware, confirmation required).</li>
         </ul>
       </SectionBlock>
-      <SectionBlock section="slaves" anchor="list-dialogs" title="Add / edit / delete">
+      <SectionBlock section="slaves" anchor="list-dialogs" title="Add / clone / edit / delete">
         <p>
           Add and Edit dialogs share the same fields (name + Unit ID). Choose descriptive names such as <code>Energy-Meter-Line-A</code>; they show up across Analyzer, Logs, and Signals. Delete dialogs reiterate the Unit ID so you do not remove the wrong device.
+        </p>
+        <p>
+          The <strong>Clone</strong> dialog uses those same two fields, pre-filled with a free name (<code>SHT20 (copy)</code>) and the lowest unused Unit ID, and tells you how many register rows it will copy. Cloning copies the register map for every function code plus the poll interval, connection kind and address offset — it does not copy attachments or Analyzer signals.
         </p>
       </SectionBlock>
       <SectionBlock section="slaves" anchor="list-best" title="List best practices">

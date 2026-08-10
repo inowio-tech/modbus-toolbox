@@ -2,12 +2,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useOutletContext } from "react-router-dom";
 import type { Screen2OutletContext } from "../Screen2Layout";
-import { FiEdit2, FiInfo, FiPlus, FiRefreshCcw, FiRefreshCw, FiSave, FiTrash2, FiX } from "react-icons/fi";
+import { FiCopy, FiEdit2, FiInfo, FiPlus, FiRefreshCcw, FiRefreshCw, FiSave, FiTrash2, FiX } from "react-icons/fi";
 import { formatLocalDateTime } from "../../datetime";
 import ConfirmDialog from "../../components/ConfirmDialog";
 import { useErrorToast, useToast } from "../../components/ToastProvider";
 import { logEvent } from "../api/logs";
 import { countSlaveRegisterRows, type SlaveRegisterCount } from "../api/slaves";
+import { nextFreeUnitId, suggestCloneName } from "../utils/cloneSlave";
 import { MdOpenInNew } from "react-icons/md";
 
 type SlaveItem = {
@@ -104,7 +105,7 @@ export default function SlavesPage() {
   const [items, setItems] = useState<SlaveItem[]>([]);
   const [query, setQuery] = useState("");
 
-  const [modalMode, setModalMode] = useState<"add" | "edit" | null>(null);
+  const [modalMode, setModalMode] = useState<"add" | "edit" | "clone" | null>(null);
   const [modalSlaveId, setModalSlaveId] = useState<number | null>(null);
   const [formName, setFormName] = useState("");
   const [formUnitId, setFormUnitId] = useState<string>("");
@@ -176,6 +177,12 @@ export default function SlavesPage() {
     });
   }, [items, query]);
 
+  const cloneSource =
+    modalMode === "clone" && modalSlaveId != null
+      ? (items.find((x) => x.id === modalSlaveId) ?? null)
+      : null;
+  const cloneRegisterCount = cloneSource ? totalRegisterCount(cloneSource.id) : 0;
+
   function openAdd() {
     setFormError(null);
     setModalMode("add");
@@ -190,6 +197,22 @@ export default function SlavesPage() {
     setModalSlaveId(s.id);
     setFormName(s.name);
     setFormUnitId(String(s.unitId));
+  }
+
+  function openClone(s: SlaveItem) {
+    setFormError(null);
+    setModalMode("clone");
+    setModalSlaveId(s.id);
+    setFormName(suggestCloneName(s.name, items.map((x) => x.name)));
+    setFormUnitId(String(nextFreeUnitId(items.map((x) => x.unitId)) ?? s.unitId));
+  }
+
+  function totalRegisterCount(slaveId: number): number {
+    const inner = countsBySlave.get(slaveId);
+    if (!inner) return 0;
+    let total = 0;
+    for (const n of inner.values()) total += n;
+    return total;
   }
 
   function closeModal(force = false) {
@@ -250,6 +273,51 @@ export default function SlavesPage() {
         return;
       }
 
+      if (modalMode === "clone") {
+        if (modalSlaveId == null) {
+          setFormError("No slave selected");
+          return;
+        }
+
+        const created = await invoke<SlaveItem>("clone_slave", {
+          name: workspace.name,
+          id: modalSlaveId,
+          newName: name,
+          newUnitId: unitId,
+          nowIso,
+        });
+
+        setItems((prev) => {
+          const next = [created, ...prev.filter((x) => x.id !== created.id)];
+          next.sort((a, b) => a.unitId - b.unitId);
+          return next;
+        });
+
+        try {
+          const counts = await countSlaveRegisterRows(workspace.name);
+          setCountsBySlave(buildCountsBySlave(counts));
+        } catch {
+          // Counts are supplementary; the cloned row still renders without them.
+        }
+
+        void logEvent({
+          scope: "workspace",
+          level: "info",
+          workspaceName: workspace.name,
+          source: "slaves",
+          message: "Slave cloned",
+          detailsJson: {
+            sourceId: modalSlaveId,
+            id: created.id,
+            unitId: created.unitId,
+            name: created.name,
+          },
+        });
+        pushToast(`Slave "${created.name}" cloned`, "info");
+        closeModal(true);
+        return;
+      }
+
       if (modalSlaveId == null) {
         setFormError("No slave selected");
         return;
@@ -289,7 +357,12 @@ export default function SlavesPage() {
         level: "error",
         workspaceName: workspace.name,
         source: "slaves",
-        message: modalMode === "add" ? "Failed to create slave" : "Failed to update slave",
+        message:
+          modalMode === "add"
+            ? "Failed to create slave"
+            : modalMode === "clone"
+              ? "Failed to clone slave"
+              : "Failed to update slave",
         detailsJson: {
           error: String(e),
           humanMessage: human,
@@ -478,39 +551,48 @@ export default function SlavesPage() {
                   </div>
                   
 
-                  <div className="flex flex-wrap gap-2 sm:justify-end">
+                  <div className="flex flex-wrap items-center gap-2 sm:justify-end">
                     <button
                       type="button"
-                      className="inline-flex items-center gap-2 justify-center rounded-full border border-emerald-600/40 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-800 transition hover:border-emerald-500/60 hover:text-emerald-900 dark:border-emerald-500/30 dark:text-emerald-200 dark:hover:border-emerald-400 dark:hover:text-emerald-100"
+                      className="inline-flex items-center justify-center rounded-full border border-emerald-600/40 bg-emerald-500/10 p-2 text-emerald-800 transition hover:border-emerald-500/60 hover:text-emerald-900 dark:border-emerald-500/30 dark:text-emerald-200 dark:hover:border-emerald-400 dark:hover:text-emerald-100"
                       onClick={() => navigate(String(s.id))}
                       title={"Open " + s.name}
+                      aria-label={"Open " + s.name}
                     >
                       <MdOpenInNew className="h-4 w-4" aria-hidden="true" />
-                      Open
                     </button>
                     <button
                       type="button"
-                      className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
+                      className="inline-flex items-center justify-center rounded-full border border-slate-300 bg-slate-100 p-2 text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
+                      onClick={() => openClone(s)}
+                      disabled={busy || deletingId != null}
+                      title={"Clone " + s.name}
+                      aria-label={"Clone slave " + s.name}
+                    >
+                      <FiCopy className="h-4 w-4" aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      className="inline-flex items-center justify-center rounded-full border border-slate-300 bg-slate-100 p-2 text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-white/5 dark:text-slate-100 dark:hover:border-slate-600"
                       onClick={() => openEdit(s)}
                       disabled={busy || deletingId != null}
-                      title="Edit slave"
+                      title={"Edit " + s.name}
+                      aria-label={"Edit slave " + s.name}
                     >
                       <FiEdit2 className="h-4 w-4" aria-hidden="true" />
-                      Edit
                     </button>
-
                     <button
                       type="button"
-                      className="inline-flex items-center gap-2 rounded-full border border-rose-600/60 bg-rose-500/10 px-4 py-2 text-sm font-semibold text-rose-800 transition hover:border-rose-500 hover:text-rose-900 disabled:cursor-not-allowed disabled:opacity-60 dark:border-rose-500/60 dark:text-rose-200 dark:hover:border-rose-400/80 dark:hover:text-rose-100"
+                      className="inline-flex items-center justify-center rounded-full border border-rose-600/60 bg-rose-500/10 p-2 text-rose-800 transition hover:border-rose-500 hover:text-rose-900 disabled:cursor-not-allowed disabled:opacity-60 dark:border-rose-500/60 dark:text-rose-200 dark:hover:border-rose-400/80 dark:hover:text-rose-100"
                       onClick={() => {
                         setDeleteError(null);
                         setConfirmDelete(s);
                       }}
                       disabled={busy || deletingId != null}
-                      title="Delete slave"
+                      title={"Delete " + s.name}
+                      aria-label={"Delete slave " + s.name}
                     >
                       <FiTrash2 className="h-4 w-4" aria-hidden="true" />
-                      Delete
                     </button>
                   </div>
                 </div>
@@ -539,9 +621,21 @@ export default function SlavesPage() {
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="text-sm font-semibold text-emerald-700 dark:text-emerald-300">
-                  {modalMode === "add" ? "Add Slave" : "Edit Slave"}
+                  {modalMode === "add" ? "Add Slave" : modalMode === "clone" ? "Clone Slave" : "Edit Slave"}
                 </div>
-                <div className="mt-1 text-sm text-slate-600 dark:text-slate-300">Name and Slave Address (Unit ID).</div>
+                <div className="mt-1 text-sm text-slate-600 dark:text-slate-300">
+                  {modalMode === "clone" && cloneSource ? (
+                    <>
+                      Copies settings and{" "}
+                      <span className="font-semibold text-emerald-700 dark:text-emerald-300">
+                        {cloneRegisterCount} register {cloneRegisterCount === 1 ? "row" : "rows"}
+                      </span>{" "}
+                      from {cloneSource.name}. Attachments and Analyzer signals are not copied.
+                    </>
+                  ) : (
+                    "Name and Slave Address (Unit ID)."
+                  )}
+                </div>
               </div>
               <button
                 type="button"
@@ -609,10 +703,20 @@ export default function SlavesPage() {
               >
                 {modalMode === "add" ? (
                   <FiPlus className="h-4 w-4" aria-hidden="true" />
+                ) : modalMode === "clone" ? (
+                  <FiCopy className="h-4 w-4" aria-hidden="true" />
                 ) : (
                   <FiSave className="h-4 w-4" aria-hidden="true" />
                 )}
-                {saving ? "Saving..." : modalMode === "add" ? "Add" : "Save"}
+                {saving
+                  ? modalMode === "clone"
+                    ? "Cloning..."
+                    : "Saving..."
+                  : modalMode === "add"
+                    ? "Add"
+                    : modalMode === "clone"
+                      ? "Clone"
+                      : "Save"}
               </button>
             </div>
           </div>

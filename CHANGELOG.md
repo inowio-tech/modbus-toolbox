@@ -6,6 +6,20 @@ All notable changes to this project are tracked here following [Keep a Changelog
 
 _No changes yet._
 
+## [0.5.0] - 2026-08-10
+### Added
+- **Clone a slave** — duplicate any slave from the Slaves list, including its
+  full register map across every function code (alias, address, data type, byte
+  order, display format, value to write) plus its poll interval, connection kind
+  and address offset. The clone dialog pre-fills a free name (`<name> (copy)`)
+  and the lowest unused Unit ID, and shows how many register rows will be copied.
+  The copy runs in a single transaction, so a failure never leaves a partly
+  cloned slave behind.
+
+### Changed
+- Slaves list: the per-row actions (Open, Clone, Edit, Delete) are now compact
+  icon buttons with tooltips, so all four fit on one line.
+
 ## [0.4.0] - 2026-07-04
 ### Added
 - **TCP Simulator (Modbus TCP server).** Turn the workbench into a Modbus TCP
